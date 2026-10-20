@@ -8,10 +8,18 @@ enum ExternalTool: String, CaseIterable, Identifiable {
     case oxipng
     case qpdf
     case jpegtran
+    case pngquant
+    case mozjpeg
 
     var id: String { rawValue }
 
-    var executable: String { self == .ghostscript ? "gs" : rawValue }
+    var executable: String {
+        switch self {
+        case .ghostscript: return "gs"
+        case .mozjpeg: return "cjpeg"
+        default: return rawValue
+        }
+    }
 
     var package: String {
         switch self {
@@ -20,6 +28,8 @@ enum ExternalTool: String, CaseIterable, Identifiable {
         case .oxipng: return "oxipng"
         case .qpdf: return "qpdf"
         case .jpegtran: return "jpeg"
+        case .pngquant: return "pngquant"
+        case .mozjpeg: return "mozjpeg"
         }
     }
 
@@ -30,10 +40,16 @@ enum ExternalTool: String, CaseIterable, Identifiable {
         case .oxipng: return "Lossless PNG compression"
         case .qpdf: return "Lossless PDF compression"
         case .jpegtran: return "Lossless JPEG compression"
+        case .pngquant: return "Smaller PNGs that keep their size and transparency"
+        case .mozjpeg: return "Sharper JPEGs at the same file size"
         }
     }
 
     var path: String? {
+        // mozjpeg's cjpeg shares its name with libjpeg's, so only its own keg-only location counts.
+        if self == .mozjpeg {
+            return ["/opt/homebrew/opt/mozjpeg/bin/cjpeg", "/usr/local/opt/mozjpeg/bin/cjpeg"].first { FileManager.default.isExecutableFile(atPath: $0) }
+        }
         // Homebrew installs libjpeg's tools keg-only, outside the usual bin directories.
         let extra = self == .jpegtran ? ["/opt/homebrew/opt/jpeg/bin/jpegtran", "/usr/local/opt/jpeg/bin/jpegtran"] : []
         return Shell.which(executable, extra: extra)

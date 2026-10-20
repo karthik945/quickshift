@@ -208,6 +208,39 @@ import ImageIO
             count += 1
             print("PASS export sizes & icons")
         }
+        // Transparent PNGs: a smart palette reaches the target at full size; Balanced keeps alpha.
+        if ExternalTool.pngquant.isAvailable {
+            let (w, h) = (1000, 800)
+            let art = CGContext(data:nil,width:w,height:h,bitsPerComponent:8,bytesPerRow:0,space:CGColorSpace(name:CGColorSpace.sRGB)!,bitmapInfo:CGImageAlphaInfo.premultipliedLast.rawValue)!
+            for i in 0..<40 {
+                art.setFillColor(CGColor(red: Double(i) / 40, green: 0.4 + Double(i % 7) / 12, blue: 1 - Double(i) / 40, alpha: 0.6 + Double(i % 4) / 10))
+                art.fillEllipse(in: CGRect(x: 40 + i * 21, y: 60 + (i * 37) % 600, width: 180, height: 160))
+            }
+            let png = root.appendingPathComponent("sticker.png")
+            try ImageIOBridge.write(art.makeImage()!, to: png, format: .png)
+            let target = FileSizeFormatter.size(of: png) / 4
+            let fitted = root.appendingPathComponent("sticker-target.png")
+            try await Compressor.compress(png, preset: .balanced, resizeLongEdge: 0, targetBytes: target, to: fitted) { _ in }
+            let fittedImage = try ImageIOBridge.load(fitted)
+            precondition(FileSizeFormatter.size(of: fitted) <= target && fittedImage.width == w, "PNG target at full size, got \(fittedImage.width) px, \(FileSizeFormatter.size(of: fitted)) bytes")
+            let balanced = root.appendingPathComponent("sticker-balanced.png")
+            try await Compressor.compress(png, preset: .balanced, resizeLongEdge: 0, targetBytes: nil, to: balanced) { _ in }
+            let balancedPixels = rgba(try ImageIOBridge.load(balanced))
+            precondition(FileSizeFormatter.size(of: balanced) < FileSizeFormatter.size(of: png) && balancedPixels[3] < 10, "Balanced PNG is smaller and keeps transparency")
+            count += 1
+            print("PASS pngquant \(FileSizeFormatter.size(of: png)) -> target \(FileSizeFormatter.size(of: fitted)), balanced \(FileSizeFormatter.size(of: balanced)) bytes")
+        }
+        if ExternalTool.mozjpeg.isAvailable {
+            let photo = try ImageIOBridge.load(root.appendingPathComponent("portrait.jpg"))
+            let moz = root.appendingPathComponent("moz.jpg")
+            let apple = root.appendingPathComponent("apple.jpg")
+            try ImageIOBridge.write(photo, to: apple, format: .jpg, quality: 0.72)
+            try await Compressor.encodeMatchingApple(photo, to: moz, format: .jpg, quality: 0.72)
+            let decoded = try ImageIOBridge.load(moz)
+            precondition(decoded.width == photo.width && FileSizeFormatter.size(of: moz) <= FileSizeFormatter.size(of: apple), "mozjpeg never exceeds Apple's size at a level")
+            count += 1
+            print("PASS mozjpeg encode \(FileSizeFormatter.size(of: moz)) bytes")
+        }
         print("DESIGN RESULT: \(count) passed")
     }
 }

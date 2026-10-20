@@ -97,11 +97,23 @@ enum Compressor {
         progress(0.2)
 
         guard let targetBytes else {
-            if finalFormat == .png {
+            if finalFormat == .png, ExternalTool.pngquant.isAvailable {
+                // A smart palette keeps full size and transparency, unlike resizing.
+                try ImageIOBridge.write(image, to: destination, format: .png)
+                _ = try await quantizePNG(destination, quality: preset == .strong ? "45-75" : "70-95", to: destination)
+                if resizeLongEdge == 0, format == .png, FileSizeFormatter.size(of: destination) >= FileSizeFormatter.size(of: url) {
+                    try FileManager.default.removeItem(at: destination)
+                    try FileManager.default.copyItem(at: url, to: destination)
+                }
+            } else if finalFormat == .png {
                 let scaled = preset == .strong ? ImageIOBridge.resized(image, longEdge: Int(Double(max(image.width, image.height)) * 0.7)) : image
                 try ImageIOBridge.write(scaled, to: destination, format: .png)
             } else {
-                try await ImageIOBridge.writeAnyFormat(image, to: destination, format: finalFormat, quality: preset.imageQuality)
+                try await encodeMatchingApple(image, to: destination, format: finalFormat, quality: preset.imageQuality)
+                if resizeLongEdge == 0, finalFormat == format, FileSizeFormatter.size(of: destination) >= FileSizeFormatter.size(of: url) {
+                    try FileManager.default.removeItem(at: destination)
+                    try FileManager.default.copyItem(at: url, to: destination)
+                }
             }
             progress(1)
             return
@@ -141,7 +153,7 @@ enum Compressor {
             try Task.checkCancellation()
             encodes += 1
             let url = directory.appendingPathComponent("q\(encodes).\(format.fileExtension)")
-            try await ImageIOBridge.writeAnyFormat(candidate, to: url, format: format, quality: quality)
+            try await encodeImage(candidate, to: url, format: format, quality: quality)
             let size = FileSizeFormatter.size(of: url)
             if smallest == nil || size < smallest!.size { smallest = (url, size) }
             progress(min(0.95, 0.2 + 0.05 * Double(encodes)))
@@ -181,10 +193,21 @@ enum Compressor {
             if ExternalTool.oxipng.isAvailable {
                 try? await ExternalTool.oxipng.run(["-o", "2", "--strip", "safe", url.path], purpose: "PNG optimization")
             }
-            let size = FileSizeFormatter.size(of: url)
+            var size = FileSizeFormatter.size(of: url)
             if smallest == nil || size < smallest!.size { smallest = (url, size) }
             progress(min(0.95, 0.2 + 0.1 * Double(pass + 1)))
             if size <= targetBytes { return url }
+            // Before giving up pixels, try a smart palette at this size, highest quality first.
+            if ExternalTool.pngquant.isAvailable {
+                for (index, quality) in ["80-98", "65-90", "50-80", "35-65"].enumerated() {
+                    let quantized = directory.appendingPathComponent("png\(pass)-q\(index).png")
+                    guard try await quantizePNG(url, quality: quality, to: quantized) else { continue }
+                    let quantizedSize = FileSizeFormatter.size(of: quantized)
+                    if quantizedSize < smallest!.size { smallest = (quantized, quantizedSize) }
+                    if quantizedSize <= targetBytes { return quantized }
+                    size = min(size, quantizedSize)
+                }
+            }
             let ratio = min(0.95, (Double(targetBytes) * 0.92 / Double(size)).squareRoot())
             let width = Double(candidate.width) * ratio, height = Double(candidate.height) * ratio
             guard width >= 16, height >= 16 else { break }
@@ -192,6 +215,61 @@ enum Compressor {
         }
         guard let smallest else { throw OpenTangerineError.encodeFailed("PNG") }
         return smallest.url
+    }
+
+    /// Encodes with mozjpeg when installed: at the same file size it scores visibly higher than Apple's
+    /// encoder at small sizes. Quality uses Apple's 0–1 scale, mapped so file sizes stay comparable.
+    static func encodeImage(_ image: CGImage, to url: URL, format: FileFormat, quality: Double) async throws {
+        guard format == .jpg, ExternalTool.mozjpeg.isAvailable else {
+            try await ImageIOBridge.writeAnyFormat(image, to: url, format: format, quality: quality)
+            return
+        }
+        let temp = FileManager.default.temporaryDirectory.appendingPathComponent("opentangerine-\(UUID().uuidString).png")
+        defer { try? FileManager.default.removeItem(at: temp) }
+        // Flattening also converts wide-gamut (Display P3) photos to sRGB, which a JPEG without a profile assumes.
+        try ImageIOBridge.write(ImageIOBridge.flatten(image, background: .white), to: temp, format: .png)
+        let mozQuality = min(98, max(5, Int((56.3 + 46.7 * quality).rounded())))
+        try await ExternalTool.mozjpeg.run(["-quality", "\(mozQuality)", "-optimize", "-outfile", url.path, temp.path], purpose: "JPEG encoding")
+    }
+
+    /// For the Balanced and Strong levels: Apple's encode sets the size budget, then mozjpeg uses the
+    /// highest quality that fits it. Same or smaller file, higher quality, whatever the image content.
+    static func encodeMatchingApple(_ image: CGImage, to url: URL, format: FileFormat, quality: Double) async throws {
+        try await ImageIOBridge.writeAnyFormat(image, to: url, format: format, quality: quality)
+        guard format == .jpg, ExternalTool.mozjpeg.isAvailable else { return }
+        let budget = FileSizeFormatter.size(of: url)
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("opentangerine-moz-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let source = directory.appendingPathComponent("source.png")
+        try ImageIOBridge.write(ImageIOBridge.flatten(image, background: .white), to: source, format: .png)
+        var low = 30, high = 95
+        var best: URL?
+        while low <= high {
+            try Task.checkCancellation()
+            let mid = (low + high) / 2
+            let candidate = directory.appendingPathComponent("q\(mid).jpg")
+            try await ExternalTool.mozjpeg.run(["-quality", "\(mid)", "-optimize", "-outfile", candidate.path, source.path], purpose: "JPEG encoding")
+            if FileSizeFormatter.size(of: candidate) <= budget { best = candidate; low = mid + 1 } else { high = mid - 1 }
+        }
+        if let best { _ = try FileManager.default.replaceItemAt(url, withItemAt: best) }
+    }
+
+    /// Reduces a PNG to a smart palette. Returns false when pngquant can't reach the minimum quality.
+    static func quantizePNG(_ source: URL, quality: String, to destination: URL) async throws -> Bool {
+        let result = try await ExternalTool.pngquant.run(
+            ["--quality=\(quality)", "--speed", isEstimating ? "4" : "3", "--strip", "--force", "--output", destination.path, source.path],
+            purpose: "PNG compression", acceptedStatuses: [0, 98, 99]
+        )
+        // 98: the result would be larger than the input; 99: quality below the minimum.
+        guard result.status == 0 else {
+            if result.status == 98, source != destination { try? FileManager.default.removeItem(at: destination); try FileManager.default.copyItem(at: source, to: destination) }
+            return result.status == 98
+        }
+        if ExternalTool.oxipng.isAvailable {
+            try? await ExternalTool.oxipng.run(["-o", "2", "--strip", "safe", destination.path], purpose: "PNG optimization")
+        }
+        return true
     }
 
     static func compressPDF(_ url: URL, preset: CompressionPreset, targetBytes: Int64?, to destination: URL, progress: @escaping (Double) -> Void) async throws {
