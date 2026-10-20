@@ -15,6 +15,8 @@ final class Job: ObservableObject, Identifiable {
     @Published var missedTarget = false
     var outputs: [URL] = []
     var sizeSource: URL?
+    /// Read after the work finishes, for jobs whose result is not a file (for example copied text).
+    var summaryProvider: (() -> String?)?
     var targetBytes: Int64?
     var task: Task<Void, Never>?
 
@@ -113,7 +115,7 @@ final class JobRunner: ObservableObject {
                 let outputs = try await work(progress)
                 try Task.checkCancellation()
                 job.outputs = outputs
-                job.summary = Self.sizeSummary(job, outputs: outputs)
+                job.summary = job.summaryProvider?() ?? Self.sizeSummary(job, outputs: outputs)
                 if let target = job.targetBytes, outputs.count == 1 { job.missedTarget = FileSizeFormatter.size(of: outputs[0]) > target }
                 job.progress = 1
                 job.status = .done
@@ -165,10 +167,11 @@ final class JobRunner: ObservableObject {
         dismissAll()
     }
 
-    func run(title: String, detail: String, symbol: String = "arrow.triangle.2.circlepath", sizeSource: URL? = nil, targetBytes: Int64? = nil, work: @escaping (@escaping (Double) -> Void) async throws -> [URL]) {
+    func run(title: String, detail: String, symbol: String = "arrow.triangle.2.circlepath", sizeSource: URL? = nil, targetBytes: Int64? = nil, summary: (() -> String?)? = nil, work: @escaping (@escaping (Double) -> Void) async throws -> [URL]) {
         let job = Job(title: title, detail: detail, symbol: symbol)
         job.sizeSource = sizeSource
         job.targetBytes = targetBytes
+        job.summaryProvider = summary
         enqueue(job, work: work)
     }
 

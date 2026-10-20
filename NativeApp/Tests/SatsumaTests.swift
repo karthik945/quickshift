@@ -61,8 +61,9 @@ struct OpenTangerineTests {
             try expect(!ConversionMatrix.targets(for: .ai).contains(.heic), "design lists stay focused")
         }
 
-        runner.test("27 advanced tools") {
-            try expectEqual(ToolID.total, 27)
+        runner.test("28 advanced tools") {
+            try expectEqual(ToolID.total, 28)
+            try expect(ToolID.copyText.applies(to: [.png, .jpg]) && ToolID.copyText.applies(to: [.pdf]), "copy text on images and PDFs")
             try expect(ToolID.removeBackground.applies(to: [.jpg, .png, .heic]), "remove background on images")
             try expect(!ToolID.removeBackground.applies(to: [.pdf]), "no background removal on PDFs")
         }
@@ -204,7 +205,7 @@ struct OpenTangerineTests {
             try expect(ToolID.compress.applies(to: [.gif]), "gif compress")
             try expect(!ToolID.mergePDF.applies(to: [.docx, .docx]), "docx merge")
             try expectEqual(ToolID.available(for: [.mp3]).count, 7)
-            try expectEqual(ToolID.available(for: [.pdf]).count, 5)
+            try expectEqual(ToolID.available(for: [.pdf]).count, 6)
         }
 
         runner.test("compression presets") {

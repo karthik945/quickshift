@@ -37,6 +37,10 @@ final class ToolWindowManager: NSObject, NSWindowDelegate {
             BackgroundRemover.run(files)
             return
         }
+        if tool == .copyText {
+            TextRecognizer.run(files)
+            return
+        }
         let session = ToolSession(tool: tool, files: files)
         let root = ToolRootView(session: session)
             .environmentObject(AppSettings.shared)
@@ -132,6 +136,7 @@ struct ToolRootView: View {
             case .editImage: EditImageToolView(session: session)
             case .removeBackground: EmptyView()
             case .exportAssets: ExportAssetsToolView(session: session)
+            case .copyText: EmptyView()
             case .frameImage: FrameImageToolView(session: session)
             case .cropImage: CropImageToolView(session: session)
             case .redactImage: RedactImageToolView(session: session)
