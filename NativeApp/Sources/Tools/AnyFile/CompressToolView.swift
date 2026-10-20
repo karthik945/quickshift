@@ -12,6 +12,7 @@ struct CompressToolView: View {
     @State private var estimates: [CompressionPreset: Int64] = [:]
     @State private var estimateErrors: [CompressionPreset: String] = [:]
     @State private var estimateIsSampled = false
+    @State private var pdfFloors: [URL: Int64] = [:]
 
     enum SizeUnit: String, CaseIterable, Identifiable {
         case kilobytes = "KB"
@@ -143,6 +144,11 @@ struct CompressToolView: View {
                             .font(.callout)
                             .foregroundStyle(.secondary)
                     }
+                    ForEach(unreachablePDFs, id: \.url) { item in
+                        Label("\(item.url.lastPathComponent) is mostly text; below ≈ \(FileSizeFormatter.string(item.floor)) its pages are saved as images, so text won't be selectable or searchable.", systemImage: "exclamationmark.triangle.fill")
+                            .font(.callout)
+                            .foregroundStyle(.orange)
+                    }
                     FormHint("PDFs shrink their images step by step while text stays sharp (Ghostscript). Images use a quality search and downscale if needed. Videos and audio pick a bitrate from the duration (FFmpeg required).")
                 }
             }
@@ -160,6 +166,7 @@ struct CompressToolView: View {
         }
         .onChange(of: preset) { _, value in settings.compressionPreset = value }
         .task(id: resize) { await estimate() }
+        .task(id: useTarget) { if useTarget { await measurePDFFloors() } }
     }
 
     private func presetRow(_ option: CompressionPreset) -> some View {
@@ -202,6 +209,27 @@ struct CompressToolView: View {
                 .frame(maxWidth: 170, alignment: .trailing)
         } else if canEstimate {
             ProgressView().controlSize(.small)
+        }
+    }
+
+    private var unreachablePDFs: [(url: URL, floor: Int64)] {
+        guard let target = perFileTarget else { return [] }
+        return session.files.compactMap { url in pdfFloors[url].flatMap { $0 > target ? (url, $0) : nil } }
+    }
+
+    /// Text-heavy PDFs have no images to shrink, so a target below their floor cannot be met.
+    private func measurePDFFloors() async {
+        let pdfs = session.files.filter { FileFormat.detect($0) == .pdf && pdfFloors[$0] == nil }.prefix(Self.estimateSampleCount)
+        guard !pdfs.isEmpty, ExternalTool.ghostscript.isAvailable else { return }
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("opentangerine-floor-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        do { try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true) } catch { return }
+        for url in pdfs {
+            let work = Task.detached(priority: .utility) {
+                try await Compressor.$isEstimating.withValue(true) { try await Compressor.smallestPDFSize(url, in: directory) }
+            }
+            guard let floor = try? await withTaskCancellationHandler(operation: { try await work.value }, onCancel: { work.cancel() }) else { return }
+            pdfFloors[url] = floor
         }
     }
 

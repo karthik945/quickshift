@@ -179,7 +179,7 @@ final class JobRunner: ObservableObject {
         let saved = Int(((1 - Double(after) / Double(before)) * 100).rounded())
         var text = "\(FileSizeFormatter.string(before)) → \(FileSizeFormatter.string(after))"
         if saved > 0 { text += " (−\(saved)%)" }
-        if let target = job.targetBytes, after > target { text += " · smallest possible, target was \(FileSizeFormatter.string(target))" }
+        if let target = job.targetBytes, after > target { text += " · couldn't reach \(FileSizeFormatter.string(target))" }
         return text
     }
 

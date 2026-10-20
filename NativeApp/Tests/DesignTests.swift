@@ -131,6 +131,34 @@ import ImageIO
             count += 1
             print("PASS pdf target \(original) -> \(FileSizeFormatter.size(of: output)) bytes (target \(target))")
         }
+        // Text-only PDFs have no images to shrink; a target below their floor falls back to page images.
+        if ExternalTool.ghostscript.isAvailable {
+            let text = root.appendingPathComponent("letter.pdf")
+            var page = CGRect(x: 0, y: 0, width: 595, height: 842)
+            let context = CGContext(text as CFURL, mediaBox: &page, nil)!
+            for _ in 0..<2 {
+                context.beginPDFPage(nil)
+                NSGraphicsContext.current = NSGraphicsContext(cgContext: context, flipped: false)
+                // Like a Word export: little ink, but many embedded font subsets carry the weight.
+                let alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ abcdefghijklmnopqrstuvwxyz 0123456789 .,;:!?()&%$#@ "
+                let fonts = ["Georgia", "Times New Roman", "Helvetica Neue", "Menlo", "Avenir Next", "Baskerville", "Futura", "Didot", "Palatino", "Courier New"]
+                for (index, name) in fonts.enumerated() {
+                    let font = NSFont(name: name, size: 9) ?? NSFont.systemFont(ofSize: 9)
+                    NSAttributedString(string: alphabet + alphabet.uppercased(), attributes: [.font: font]).draw(in: CGRect(x: 40, y: 780 - index * 70, width: 515, height: 60))
+                }
+                NSGraphicsContext.current = nil
+                context.endPDFPage()
+            }
+            context.closePDF()
+            let floor = try await Compressor.smallestPDFSize(text, in: root)
+            let target = floor / 2
+            let output = root.appendingPathComponent("letter-target.pdf")
+            try await Compressor.compress(text, preset: .balanced, resizeLongEdge: 0, targetBytes: target, to: output) { _ in }
+            precondition(FileSizeFormatter.size(of: output) <= target, "text PDF reaches target \(target), got \(FileSizeFormatter.size(of: output))")
+            precondition(CGPDFDocument(output as CFURL)?.numberOfPages == 2, "text PDF keeps both pages")
+            count += 1
+            print("PASS text pdf target floor \(floor) -> \(FileSizeFormatter.size(of: output)) bytes (target \(target))")
+        }
         print("DESIGN RESULT: \(count) passed")
     }
 }

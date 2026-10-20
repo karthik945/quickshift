@@ -205,8 +205,41 @@ enum Compressor {
             attempts += 1
             progress(0.1 + 0.85 * Double(attempts) / 4)
         }
-        guard let chosen = best ?? smallest?.url else { throw OpenTangerineError.encodeFailed(destination.lastPathComponent) }
+        if let best {
+            try fm.moveItem(at: best, to: destination)
+            return
+        }
+
+        // Text-heavy PDFs have no images left to shrink. A target is a promise, so fall back to
+        // saving pages as JPEG images, searching for the sharpest rendering that still fits.
+        low = 0
+        high = pdfRasterSteps.count - 1
+        attempts = 0
+        var rasterBest: URL?
+        while low <= high {
+            try Task.checkCancellation()
+            let mid = (low + high) / 2
+            let candidate = directory.appendingPathComponent("raster-\(mid).pdf")
+            try await rasterizedPDF(url, step: pdfRasterSteps[mid], to: candidate)
+            let size = FileSizeFormatter.size(of: candidate)
+            if size < smallest!.size { smallest = (candidate, size) }
+            if size <= targetBytes { rasterBest = candidate; high = mid - 1 } else { low = mid + 1 }
+            attempts += 1
+            progress(min(0.98, 0.5 + 0.45 * Double(attempts) / 4))
+        }
+        guard let chosen = rasterBest ?? smallest?.url else { throw OpenTangerineError.encodeFailed(destination.lastPathComponent) }
         try fm.moveItem(at: chosen, to: destination)
+    }
+
+    /// Page rendering (DPI) and JPEG quality steps for the image-only fallback, from sharpest to smallest.
+    static let pdfRasterSteps: [(dpi: Int, jpegQuality: Int)] = [(150, 75), (130, 65), (110, 55), (96, 50), (85, 45), (72, 40), (60, 35), (50, 30), (40, 25)]
+
+    static func rasterizedPDF(_ url: URL, step: (dpi: Int, jpegQuality: Int), to destination: URL) async throws {
+        try await ExternalTool.ghostscript.run([
+            "-dSAFER", "-dBATCH", "-dNOPAUSE", "-dQUIET", "-sDEVICE=pdfimage24",
+            "-r\(step.dpi)", "-sCompression=JPEG", "-dJPEGQ=\(step.jpegQuality)",
+            "-o", destination.path, url.path,
+        ], purpose: "Compressing PDF")
     }
 
     /// The smallest a PDF can get without rasterizing pages: lossless re-pack or the most aggressive image step.
