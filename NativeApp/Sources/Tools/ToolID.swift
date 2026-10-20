@@ -11,6 +11,7 @@ enum ToolID: String, CaseIterable, Identifiable {
     case editMetadata
     case editImage
     case removeBackground
+    case exportAssets
     case frameImage
     case cropImage
     case redactImage
@@ -42,6 +43,7 @@ enum ToolID: String, CaseIterable, Identifiable {
         case .editMetadata: return "Edit metadata"
         case .editImage: return "Edit photo"
         case .removeBackground: return "Remove background"
+        case .exportAssets: return "Export sizes & icons"
         case .frameImage: return "Add a background"
         case .cropImage: return "Crop image"
         case .redactImage: return "Redact photo"
@@ -73,6 +75,7 @@ enum ToolID: String, CaseIterable, Identifiable {
         case .editMetadata: return "Editing metadata"
         case .editImage: return "Editing photo"
         case .removeBackground: return "Removing background"
+        case .exportAssets: return "Exporting"
         case .frameImage: return "Adding background"
         case .cropImage, .cropVideo: return "Cropping"
         case .redactImage, .redactVideo: return "Redacting"
@@ -100,6 +103,7 @@ enum ToolID: String, CaseIterable, Identifiable {
         case .editMetadata: return "METADATA"
         case .editImage: return "EDIT"
         case .removeBackground: return "REMOVE BG"
+        case .exportAssets: return "EXPORT"
         case .frameImage: return "ADD BG"
         case .cropImage, .cropVideo: return "CROP"
         case .redactImage, .redactVideo: return "REDACT"
@@ -127,6 +131,7 @@ enum ToolID: String, CaseIterable, Identifiable {
         case .editMetadata: return "tag"
         case .editImage: return "slider.horizontal.3"
         case .removeBackground: return "person.and.background.dotted"
+        case .exportAssets: return "square.and.arrow.up.on.square"
         case .frameImage: return "photo.artframe"
         case .cropImage, .cropVideo: return "crop"
         case .redactImage: return "eye.slash"
@@ -154,6 +159,8 @@ enum ToolID: String, CaseIterable, Identifiable {
         switch self {
         case .compress, .editMetadata:
             return [.image, .video, .audio, .document]
+        case .exportAssets:
+            return [.image, .design, .document]
         case .editImage, .removeBackground, .frameImage, .cropImage, .redactImage, .resizeImage, .rotateImage, .createPDF, .createCollage:
             return [.image]
         case .trimVideo, .cropVideo, .changeVideoSpeed, .joinVideos, .videoSnapshots, .splitVideo, .redactVideo:
@@ -167,7 +174,7 @@ enum ToolID: String, CaseIterable, Identifiable {
 
     var arity: ToolArity {
         switch self {
-        case .compress, .editMetadata, .removeBackground, .resizeImage, .rotateImage, .createPDF: return .any
+        case .compress, .editMetadata, .removeBackground, .exportAssets, .resizeImage, .rotateImage, .createPDF: return .any
         case .createCollage, .joinVideos, .mergePDF: return .multiple
         default: return .single
         }
@@ -179,7 +186,7 @@ enum ToolID: String, CaseIterable, Identifiable {
         guard categories.count == 1, let category = categories.first, self.categories.contains(category) else { return false }
         if category == .document {
             switch self {
-            case .mergePDF, .organizePDF, .splitPDF, .editMetadata, .compress:
+            case .mergePDF, .organizePDF, .splitPDF, .editMetadata, .compress, .exportAssets:
                 guard formats.allSatisfy({ $0 == .pdf }) else { return false }
             default:
                 return false

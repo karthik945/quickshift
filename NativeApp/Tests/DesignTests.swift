@@ -50,6 +50,11 @@ import ImageIO
                 default:
                     let image = try ImageIOBridge.load(output)
                     precondition(abs(Double(image.width) / Double(image.height) - expected.width / expected.height) < 0.05, "\(format) -> \(target) aspect ratio")
+                    // The artwork must fill the render, not sit at 72 DPI in a corner of a large canvas.
+                    if target == .png {
+                        let px = rgba(image), cx = format == .eps ? image.width / 2 : image.width * 3 / 10, cy = image.height / 2
+                        precondition(image.width >= 300 && px[(cy * image.width + cx) * 4 + 3] > 200, "\(format) artwork fills the PNG")
+                    }
                 }
                 count += 1
                 print("PASS \(format) -> \(target)")
@@ -181,6 +186,27 @@ import ImageIO
                 count += 1
                 print("PASS image target \(FileSizeFormatter.size(of: big)) -> \(size) bytes (target \(target))")
             }
+        }
+        // Export sizes & icons: sharp re-renders at each scale, plus every icon pack.
+        do {
+            var options = AssetExporter.Options()
+            options.icons = Set(AssetExporter.IconPlatform.allCases)
+            let folder = try await AssetExporter.export(ai, options: options, into: root) { _ in }
+            precondition(folder.lastPathComponent == "logo assets", "export folder name")
+            for (name, w, h) in [("logo.png", 200, 100), ("logo@2x.png", 400, 200), ("logo@3x.png", 600, 300),
+                                 ("favicon/favicon-32x32.png", 32, 32), ("favicon/apple-touch-icon.png", 180, 180),
+                                 ("android/mipmap-xxxhdpi/ic_launcher.png", 192, 192), ("AppIcon.appiconset/AppIcon-1024.png", 1024, 1024)] {
+                let image = try ImageIOBridge.load(folder.appendingPathComponent(name))
+                precondition(image.width == w && image.height == h, "\(name) is \(w)×\(h), got \(image.width)×\(image.height)")
+            }
+            let at3x = rgba(try ImageIOBridge.load(folder.appendingPathComponent("logo@3x.png")))
+            precondition(at3x[(150 * 600 + 180) * 4 + 3] > 200, "@3x artwork fills the image")
+            let ico = try Data(contentsOf: folder.appendingPathComponent("favicon/favicon.ico"))
+            precondition(Array(ico.prefix(6)) == [0, 0, 1, 0, 3, 0], "favicon.ico holds 3 sizes")
+            precondition(FileManager.default.fileExists(atPath: folder.appendingPathComponent("AppIcon.icns").path), "macOS icns")
+            precondition(FileManager.default.fileExists(atPath: folder.appendingPathComponent("AppIcon.appiconset/Contents.json").path), "iOS Contents.json")
+            count += 1
+            print("PASS export sizes & icons")
         }
         print("DESIGN RESULT: \(count) passed")
     }

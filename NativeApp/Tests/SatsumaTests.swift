@@ -55,14 +55,14 @@ struct OpenTangerineTests {
                     try expect(Engines.engine(from: format, to: target) is DesignEngine, "\(format) → \(target) engine")
                 }
             }
-            try expect(ToolID.available(for: [.psd]).isEmpty, "design files have no tools")
+            try expectEqual(ToolID.available(for: [.psd]), [.exportAssets], "design files only export")
             try expect(ConversionMatrix.targets(for: .ai).contains(.eps), "ai → eps")
             try expect(!ConversionMatrix.targets(for: .psd).contains(.svg), "psd is pixels, no svg")
             try expect(!ConversionMatrix.targets(for: .ai).contains(.heic), "design lists stay focused")
         }
 
-        runner.test("26 advanced tools") {
-            try expectEqual(ToolID.total, 26)
+        runner.test("27 advanced tools") {
+            try expectEqual(ToolID.total, 27)
             try expect(ToolID.removeBackground.applies(to: [.jpg, .png, .heic]), "remove background on images")
             try expect(!ToolID.removeBackground.applies(to: [.pdf]), "no background removal on PDFs")
         }
@@ -204,7 +204,7 @@ struct OpenTangerineTests {
             try expect(ToolID.compress.applies(to: [.gif]), "gif compress")
             try expect(!ToolID.mergePDF.applies(to: [.docx, .docx]), "docx merge")
             try expectEqual(ToolID.available(for: [.mp3]).count, 7)
-            try expectEqual(ToolID.available(for: [.pdf]).count, 4)
+            try expectEqual(ToolID.available(for: [.pdf]).count, 5)
         }
 
         runner.test("compression presets") {

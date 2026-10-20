@@ -98,11 +98,10 @@ enum DesignFiles {
               let context = CGContext(consumer: consumer, mediaBox: nil, nil) else { throw OpenTangerineError.encodeFailed(destination.lastPathComponent) }
         for index in 1...document.numberOfPages {
             guard let page = document.page(at: index) else { continue }
-            var box = CGRect(origin: .zero, size: page.getBoxRect(.cropBox).size)
+            var box = CGRect(origin: .zero, size: displaySize(page))
             let info = [kCGPDFContextMediaBox as String: NSData(bytes: &box, length: MemoryLayout<CGRect>.size)] as CFDictionary
             context.beginPDFPage(info)
-            context.concatenate(page.getDrawingTransform(.cropBox, rect: box, rotate: 0, preserveAspectRatio: true))
-            context.drawPDFPage(page)
+            draw(page, in: context, size: box.size)
             context.endPDFPage()
         }
         context.closePDF()
@@ -112,22 +111,48 @@ enum DesignFiles {
     static func renderFirstPage(_ source: URL, maxLongEdge: CGFloat = 6000) throws -> CGImage {
         let document = try document(source)
         guard let page = document.page(at: 1) else { throw OpenTangerineError.unreadable(source) }
-        let box = page.getBoxRect(.cropBox)
-        let rotated = page.rotationAngle % 180 != 0
-        let size = rotated ? CGSize(width: box.height, height: box.width) : box.size
+        let size = displaySize(page)
         guard size.width > 0, size.height > 0 else { throw OpenTangerineError.unreadable(source) }
         var scale = min(300 / 72, maxLongEdge / max(size.width, size.height))
         scale = min(scale, (40_000_000 / (size.width * size.height)).squareRoot())
         let width = max(1, Int((size.width * scale).rounded()))
         let height = max(1, Int((size.height * scale).rounded()))
+        guard let image = pageImage(page, width: width, height: height) else { throw OpenTangerineError.encodeFailed(source.lastPathComponent) }
+        return image
+    }
+
+    /// Size of the page as displayed, in points, after its /Rotate.
+    static func displaySize(_ page: CGPDFPage) -> CGSize {
+        let box = page.getBoxRect(.cropBox)
+        return page.rotationAngle % 180 != 0 ? CGSize(width: box.height, height: box.width) : box.size
+    }
+
+    /// Renders the page's crop box to fill the given pixel size on a transparent background.
+    static func pageImage(_ page: CGPDFPage, width: Int, height: Int) -> CGImage? {
         guard let context = CGContext(
             data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: 0,
             space: CGColorSpace(name: CGColorSpace.sRGB)!, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
-        ) else { throw OpenTangerineError.encodeFailed(source.lastPathComponent) }
+        ) else { return nil }
         context.interpolationQuality = .high
-        context.concatenate(page.getDrawingTransform(.cropBox, rect: CGRect(x: 0, y: 0, width: width, height: height), rotate: 0, preserveAspectRatio: true))
+        draw(page, in: context, size: CGSize(width: width, height: height))
+        return context.makeImage()
+    }
+
+    /// CGPDFPage.getDrawingTransform never scales up, so artwork rendered above 72 DPI needs a hand-built transform.
+    static func draw(_ page: CGPDFPage, in context: CGContext, size: CGSize) {
+        let box = page.getBoxRect(.cropBox)
+        let angle = ((page.rotationAngle % 360) + 360) % 360
+        context.saveGState()
+        switch angle {
+        case 90: context.translateBy(x: 0, y: size.height); context.rotate(by: -.pi / 2)
+        case 180: context.translateBy(x: size.width, y: size.height); context.rotate(by: .pi)
+        case 270: context.translateBy(x: size.width, y: 0); context.rotate(by: .pi / 2)
+        default: break
+        }
+        let target = angle % 180 != 0 ? CGSize(width: size.height, height: size.width) : size
+        context.scaleBy(x: target.width / box.width, y: target.height / box.height)
+        context.translateBy(x: -box.minX, y: -box.minY)
         context.drawPDFPage(page)
-        guard let image = context.makeImage() else { throw OpenTangerineError.encodeFailed(source.lastPathComponent) }
-        return image
+        context.restoreGState()
     }
 }

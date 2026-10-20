@@ -82,7 +82,7 @@ final class ToolWindowManager: NSObject, NSWindowDelegate {
 
     static func windowClass(for tool: ToolID) -> WindowClass {
         switch tool {
-        case .compress, .resizeImage, .createPDF, .mergePDF, .splitPDF, .audioChannels, .rotateImage:
+        case .compress, .exportAssets, .resizeImage, .createPDF, .mergePDF, .splitPDF, .audioChannels, .rotateImage:
             return .compact
         case .editMetadata, .normalizeAudio, .organizePDF, .createCollage, .joinVideos, .audioToVideo, .trimAudio, .redactAudio:
             return .standard
@@ -93,7 +93,7 @@ final class ToolWindowManager: NSObject, NSWindowDelegate {
 
     static func preferredSize(for tool: ToolID) -> NSSize {
         switch tool {
-        case .compress:
+        case .compress, .exportAssets:
             return NSSize(width: 640, height: 560)
         case .resizeImage:
             return NSSize(width: 620, height: 400)
@@ -131,6 +131,7 @@ struct ToolRootView: View {
             case .editMetadata: MetadataToolView(session: session)
             case .editImage: EditImageToolView(session: session)
             case .removeBackground: EmptyView()
+            case .exportAssets: ExportAssetsToolView(session: session)
             case .frameImage: FrameImageToolView(session: session)
             case .cropImage: CropImageToolView(session: session)
             case .redactImage: RedactImageToolView(session: session)
