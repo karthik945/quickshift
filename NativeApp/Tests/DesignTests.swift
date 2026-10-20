@@ -127,6 +127,7 @@ import ImageIO
             let output = root.appendingPathComponent("scan-target.pdf")
             try await Compressor.compress(heavy, preset: .balanced, resizeLongEdge: 0, targetBytes: target, to: output) { _ in }
             precondition(FileSizeFormatter.size(of: output) <= target, "PDF target \(target) reached, got \(FileSizeFormatter.size(of: output))")
+            precondition(FileSizeFormatter.size(of: output) >= target * 8 / 10, "PDF lands near target \(target), got \(FileSizeFormatter.size(of: output))")
             precondition(CGPDFDocument(output as CFURL)?.numberOfPages == 1, "PDF target keeps pages")
             count += 1
             print("PASS pdf target \(original) -> \(FileSizeFormatter.size(of: output)) bytes (target \(target))")
@@ -155,9 +156,31 @@ import ImageIO
             let output = root.appendingPathComponent("letter-target.pdf")
             try await Compressor.compress(text, preset: .balanced, resizeLongEdge: 0, targetBytes: target, to: output) { _ in }
             precondition(FileSizeFormatter.size(of: output) <= target, "text PDF reaches target \(target), got \(FileSizeFormatter.size(of: output))")
+            precondition(FileSizeFormatter.size(of: output) >= target * 8 / 10, "text PDF lands near target \(target), got \(FileSizeFormatter.size(of: output))")
             precondition(CGPDFDocument(output as CFURL)?.numberOfPages == 2, "text PDF keeps both pages")
             count += 1
             print("PASS text pdf target floor \(floor) -> \(FileSizeFormatter.size(of: output)) bytes (target \(target))")
+        }
+        // A large detailed photo to 50 KB must land just under the target, not far below or above it.
+        do {
+            let (w, h) = (3584, 2800)
+            let photo = CGContext(data:nil,width:w,height:h,bitsPerComponent:8,bytesPerRow:0,space:CGColorSpace(name:CGColorSpace.sRGB)!,bitmapInfo:CGImageAlphaInfo.noneSkipLast.rawValue)!
+            var seed: UInt64 = 7
+            for y in stride(from: 0, to: h, by: 8) { for x in stride(from: 0, to: w, by: 8) {
+                seed = seed &* 6364136223846793005 &+ 1442695040888963407
+                photo.setFillColor(CGColor(red: Double(seed >> 56) / 255, green: Double(x) / Double(w), blue: Double((seed >> 40) & 0xff) / 255, alpha: 1))
+                photo.fill(CGRect(x: x, y: y, width: 8, height: 8))
+            } }
+            let big = root.appendingPathComponent("portrait.jpg")
+            try ImageIOBridge.write(photo.makeImage()!, to: big, format: .jpg, quality: 0.92)
+            for target: Int64 in [50_000, 200_000] {
+                let output = root.appendingPathComponent("portrait-\(target).jpg")
+                try await Compressor.compress(big, preset: .balanced, resizeLongEdge: 0, targetBytes: target, to: output) { _ in }
+                let size = FileSizeFormatter.size(of: output)
+                precondition(size <= target && size >= target * 8 / 10, "image to \(target) landed at \(size)")
+                count += 1
+                print("PASS image target \(FileSizeFormatter.size(of: big)) -> \(size) bytes (target \(target))")
+            }
         }
         print("DESIGN RESULT: \(count) passed")
     }

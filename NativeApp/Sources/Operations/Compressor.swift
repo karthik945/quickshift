@@ -113,54 +113,86 @@ enum Compressor {
             if FileSizeFormatter.size(of: destination) <= targetBytes { progress(1); return }
             try? FileManager.default.removeItem(at: destination)
         }
-        if finalFormat == .png {
-            var candidate = image
-            for attempt in 0..<12 {
-                try ImageIOBridge.write(candidate, to: destination, format: .png)
-                if FileSizeFormatter.size(of: destination) <= targetBytes { progress(1); return }
-                guard candidate.width > 1 && candidate.height > 1 else { break }
-                candidate = ImageIOBridge.scaled(candidate, to: CGSize(width: max(1, Double(candidate.width) * 0.8), height: max(1, Double(candidate.height) * 0.8)))
-                progress(0.2 + 0.7 * Double(attempt + 1) / 12)
-            }
-            throw OpenTangerineError.invalidInput("The requested size is too small while preserving PNG transparency. Choose a larger target size.")
+        if resizeLongEdge == 0, finalFormat == format, FileSizeFormatter.size(of: url) <= targetBytes {
+            try FileManager.default.copyItem(at: url, to: destination)
+            progress(1)
+            return
         }
-        var low = 0.15, high = 0.95
-        var candidate = image
-        var attempts = 0
-        var best: Double?
-        while attempts < 12 {
-            attempts += 1
-            let quality = (low + high) / 2
-            try await ImageIOBridge.writeAnyFormat(candidate, to: destination, format: finalFormat, quality: quality)
-            let size = FileSizeFormatter.size(of: destination)
-            progress(0.2 + 0.7 * Double(attempts) / 12)
-            if size <= targetBytes {
-                best = quality
-                low = quality
-                if Double(size) > Double(targetBytes) * 0.9 { break }
-            } else {
-                high = quality
-            }
-            if high - low < 0.03 {
-                if best == nil {
-                    let shrink = 0.8
-                    candidate = ImageIOBridge.scaled(candidate, to: CGSize(width: Double(candidate.width) * shrink, height: Double(candidate.height) * shrink))
-                    low = 0.15
-                    high = 0.95
-                    guard candidate.width > 64 else { break }
-                } else {
-                    break
-                }
-            }
-        }
-        if let best {
-            try await ImageIOBridge.writeAnyFormat(candidate, to: destination, format: finalFormat, quality: best)
-        }
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("opentangerine-fit-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let fitted = finalFormat == .png
+            ? try await fitPNG(image, targetBytes: targetBytes, in: directory, progress: progress)
+            : try await fitLossyImage(image, format: finalFormat, targetBytes: targetBytes, in: directory, progress: progress)
+        try FileManager.default.moveItem(at: fitted, to: destination)
         progress(1)
     }
 
-    /// Image downsampling (DPI) and JPEG QFactor steps, from least to most loss. Text and vectors stay sharp at every step.
-    static let pdfSteps: [(dpi: Int, qFactor: Double)] = [(300, 0.15), (220, 0.25), (150, 0.4), (120, 0.6), (96, 0.76), (72, 1.0), (60, 1.3), (45, 1.8)]
+    /// Lowest JPEG/WebP/HEIC quality used before resizing instead: below this, blocking looks worse than fewer pixels.
+    static let imageQualityFloor = 0.5
+
+    /// Best-quality encode at or under the target. Quality is searched first; when even the floor
+    /// quality is too large, the image is resized in one estimated jump (size scales with pixel area).
+    static func fitLossyImage(_ image: CGImage, format: FileFormat, targetBytes: Int64, in directory: URL, progress: @escaping (Double) -> Void) async throws -> URL {
+        var candidate = image
+        var smallest: (url: URL, size: Int64)?
+        var encodes = 0
+        func encode(_ quality: Double) async throws -> (url: URL, size: Int64) {
+            try Task.checkCancellation()
+            encodes += 1
+            let url = directory.appendingPathComponent("q\(encodes).\(format.fileExtension)")
+            try await ImageIOBridge.writeAnyFormat(candidate, to: url, format: format, quality: quality)
+            let size = FileSizeFormatter.size(of: url)
+            if smallest == nil || size < smallest!.size { smallest = (url, size) }
+            progress(min(0.95, 0.2 + 0.05 * Double(encodes)))
+            return (url, size)
+        }
+        for _ in 0..<6 {
+            let top = try await encode(0.95)
+            if top.size <= targetBytes { return top.url }
+            let floor = try await encode(imageQualityFloor)
+            guard floor.size <= targetBytes else {
+                let ratio = min(0.95, (Double(targetBytes) * 0.9 / Double(floor.size)).squareRoot())
+                let width = Double(candidate.width) * ratio, height = Double(candidate.height) * ratio
+                guard width >= 16, height >= 16 else { break }
+                candidate = ImageIOBridge.scaled(candidate, to: CGSize(width: width, height: height))
+                continue
+            }
+            var best = floor
+            var low = imageQualityFloor, high = 0.95
+            for _ in 0..<7 where Double(best.size) < Double(targetBytes) * 0.92 {
+                let attempt = try await encode((low + high) / 2)
+                if attempt.size <= targetBytes { best = attempt; low = (low + high) / 2 } else { high = (low + high) / 2 }
+            }
+            return best.url
+        }
+        guard let smallest else { throw OpenTangerineError.encodeFailed("image") }
+        return smallest.url
+    }
+
+    /// PNG has no quality setting, so transparent images reach the target by resizing alone.
+    static func fitPNG(_ image: CGImage, targetBytes: Int64, in directory: URL, progress: @escaping (Double) -> Void) async throws -> URL {
+        var candidate = image
+        var smallest: (url: URL, size: Int64)?
+        for pass in 0..<8 {
+            try Task.checkCancellation()
+            let url = directory.appendingPathComponent("png\(pass).png")
+            try ImageIOBridge.write(candidate, to: url, format: .png)
+            if ExternalTool.oxipng.isAvailable {
+                try? await ExternalTool.oxipng.run(["-o", "2", "--strip", "safe", url.path], purpose: "PNG optimization")
+            }
+            let size = FileSizeFormatter.size(of: url)
+            if smallest == nil || size < smallest!.size { smallest = (url, size) }
+            progress(min(0.95, 0.2 + 0.1 * Double(pass + 1)))
+            if size <= targetBytes { return url }
+            let ratio = min(0.95, (Double(targetBytes) * 0.92 / Double(size)).squareRoot())
+            let width = Double(candidate.width) * ratio, height = Double(candidate.height) * ratio
+            guard width >= 16, height >= 16 else { break }
+            candidate = ImageIOBridge.scaled(candidate, to: CGSize(width: width, height: height))
+        }
+        guard let smallest else { throw OpenTangerineError.encodeFailed("PNG") }
+        return smallest.url
+    }
 
     static func compressPDF(_ url: URL, preset: CompressionPreset, targetBytes: Int64?, to destination: URL, progress: @escaping (Double) -> Void) async throws {
         let fm = FileManager.default
@@ -170,7 +202,7 @@ enum Compressor {
             return
         }
         guard let targetBytes else {
-            try await ghostscriptPDF(url, step: pdfSteps[preset == .strong ? 4 : 2], to: destination)
+            try await ghostscriptPDF(url, step: preset == .strong ? (96, 0.76) : (150, 0.4), to: destination)
             if FileSizeFormatter.size(of: destination) >= FileSizeFormatter.size(of: url) {
                 try? fm.removeItem(at: destination)
                 try fm.copyItem(at: url, to: destination)
@@ -187,52 +219,62 @@ enum Compressor {
         try? fm.removeItem(at: destination)
         progress(0.1)
 
-        // Binary search for the least lossy step that fits; keep the smallest attempt if none does.
         let directory = fm.temporaryDirectory.appendingPathComponent("opentangerine-pdf-\(UUID().uuidString)")
         try fm.createDirectory(at: directory, withIntermediateDirectories: true)
         defer { try? fm.removeItem(at: directory) }
-        var low = 0, high = pdfSteps.count - 1, attempts = 0
-        var best: URL?
-        var smallest: (url: URL, size: Int64)?
-        while low <= high {
-            try Task.checkCancellation()
-            let mid = (low + high) / 2
-            let candidate = directory.appendingPathComponent("step-\(mid).pdf")
-            try await ghostscriptPDF(url, step: pdfSteps[mid], to: candidate)
-            let size = FileSizeFormatter.size(of: candidate)
-            if smallest == nil || size < smallest!.size { smallest = (candidate, size) }
-            if size <= targetBytes { best = candidate; high = mid - 1 } else { low = mid + 1 }
-            attempts += 1
-            progress(0.1 + 0.85 * Double(attempts) / 4)
+        var attempts = 0
+        let report: () -> Void = { attempts += 1; progress(min(0.98, 0.1 + 0.06 * Double(attempts))) }
+
+        // Stage 1 keeps text and vectors sharp and only shrinks embedded images.
+        let vector = try await fitPDF(targetBytes: targetBytes, in: directory, name: "vector", attempt: report) { loss, output in
+            try await ghostscriptPDF(url, step: vectorStep(loss), to: output)
         }
-        if let best {
-            try fm.moveItem(at: best, to: destination)
+        if let fit = vector.fit {
+            try fm.moveItem(at: fit, to: destination)
             return
         }
-
-        // Text-heavy PDFs have no images left to shrink. A target is a promise, so fall back to
-        // saving pages as JPEG images, searching for the sharpest rendering that still fits.
-        low = 0
-        high = pdfRasterSteps.count - 1
-        attempts = 0
-        var rasterBest: URL?
-        while low <= high {
-            try Task.checkCancellation()
-            let mid = (low + high) / 2
-            let candidate = directory.appendingPathComponent("raster-\(mid).pdf")
-            try await rasterizedPDF(url, step: pdfRasterSteps[mid], to: candidate)
-            let size = FileSizeFormatter.size(of: candidate)
-            if size < smallest!.size { smallest = (candidate, size) }
-            if size <= targetBytes { rasterBest = candidate; high = mid - 1 } else { low = mid + 1 }
-            attempts += 1
-            progress(min(0.98, 0.5 + 0.45 * Double(attempts) / 4))
+        // Stage 2: text-heavy PDFs have no images left to shrink. A target is a promise, so pages
+        // are saved as JPEG images at the sharpest rendering that still fits.
+        let raster = try await fitPDF(targetBytes: targetBytes, in: directory, name: "raster", attempt: report) { loss, output in
+            try await rasterizedPDF(url, step: rasterStep(loss), to: output)
         }
-        guard let chosen = rasterBest ?? smallest?.url else { throw OpenTangerineError.encodeFailed(destination.lastPathComponent) }
+        let chosen = raster.fit ?? (raster.smallest.size < vector.smallest.size ? raster.smallest.url : vector.smallest.url)
         try fm.moveItem(at: chosen, to: destination)
     }
 
-    /// Page rendering (DPI) and JPEG quality steps for the image-only fallback, from sharpest to smallest.
-    static let pdfRasterSteps: [(dpi: Int, jpegQuality: Int)] = [(150, 75), (130, 65), (110, 55), (96, 50), (85, 45), (72, 40), (60, 35), (50, 30), (40, 25)]
+    /// Continuous loss scale from 0 (gentlest) to 1 (strongest), so a search can land just under the target.
+    static func vectorStep(_ loss: Double) -> (dpi: Int, qFactor: Double) {
+        (Int((300 * pow(45.0 / 300, loss)).rounded()), 0.15 + 1.65 * loss)
+    }
+
+    static func rasterStep(_ loss: Double) -> (dpi: Int, jpegQuality: Int) {
+        (Int((150 * pow(36.0 / 150, loss)).rounded()), Int((75 - 50 * loss).rounded()))
+    }
+
+    /// Finds the least loss that fits: checks the strongest setting first, then bisects and stops
+    /// once a fitting result is within 90% of the target.
+    static func fitPDF(targetBytes: Int64, in directory: URL, name: String, attempt: () -> Void,
+                       render: (Double, URL) async throws -> Void) async throws -> (fit: URL?, smallest: (url: URL, size: Int64)) {
+        var index = 0
+        func run(_ loss: Double) async throws -> (url: URL, size: Int64) {
+            try Task.checkCancellation()
+            index += 1
+            let output = directory.appendingPathComponent("\(name)-\(index).pdf")
+            try await render(loss, output)
+            attempt()
+            return (output, FileSizeFormatter.size(of: output))
+        }
+        let strongest = try await run(1)
+        guard strongest.size <= targetBytes else { return (nil, strongest) }
+        var best = strongest
+        var low = 0.0, high = 1.0
+        for _ in 0..<6 where Double(best.size) < Double(targetBytes) * 0.9 {
+            let mid = (low + high) / 2
+            let result = try await run(mid)
+            if result.size <= targetBytes { best = result; high = mid } else { low = mid }
+        }
+        return (best.url, strongest)
+    }
 
     static func rasterizedPDF(_ url: URL, step: (dpi: Int, jpegQuality: Int), to destination: URL) async throws {
         try await ExternalTool.ghostscript.run([
@@ -252,7 +294,7 @@ enum Compressor {
             try? FileManager.default.removeItem(at: lossless)
         }
         let strongest = directory.appendingPathComponent("min-step-\(UUID().uuidString).pdf")
-        try await ghostscriptPDF(url, step: pdfSteps[pdfSteps.count - 1], to: strongest)
+        try await ghostscriptPDF(url, step: vectorStep(1), to: strongest)
         smallest = min(smallest, FileSizeFormatter.size(of: strongest))
         try? FileManager.default.removeItem(at: strongest)
         return smallest
