@@ -61,8 +61,10 @@ struct OpenTangerineTests {
             try expect(!ConversionMatrix.targets(for: .ai).contains(.heic), "design lists stay focused")
         }
 
-        runner.test("25 advanced tools") {
-            try expectEqual(ToolID.total, 25)
+        runner.test("26 advanced tools") {
+            try expectEqual(ToolID.total, 26)
+            try expect(ToolID.removeBackground.applies(to: [.jpg, .png, .heic]), "remove background on images")
+            try expect(!ToolID.removeBackground.applies(to: [.pdf]), "no background removal on PDFs")
         }
 
         runner.test("no format converts to itself") {

@@ -106,6 +106,19 @@ import PDFKit
         try await MetadataOps.write(pdfURL,edits:await MetadataOps.read(pdfURL),removeAll:false,removeSensitive:true,to:pdfClean,progress:{_ in})
         let pdfFields=await MetadataOps.read(pdfClean)
         check(!pdfFields.contains {$0.key=="Author"} && pdfFields.contains {$0.value=="Keep title"}, "PDF sensitive stripping retains title")
+        // A dark disc on a plain background: Vision either cuts it out with transparency or reports no subject.
+        let subject = CGContext(data: nil, width: 400, height: 300, bitsPerComponent: 8, bytesPerRow: 0, space: CGColorSpace(name: CGColorSpace.sRGB)!, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
+        subject.setFillColor(CGColor(red: 0.95, green: 0.95, blue: 0.92, alpha: 1)); subject.fill(CGRect(x: 0, y: 0, width: 400, height: 300))
+        subject.setFillColor(CGColor(red: 0.8, green: 0.2, blue: 0.1, alpha: 1)); subject.fillEllipse(in: CGRect(x: 130, y: 70, width: 140, height: 160))
+        let subjectURL = dir.appendingPathComponent("subject.png"), cutoutURL = dir.appendingPathComponent("subject no background.png")
+        try ImageIOBridge.write(subject.makeImage()!, to: subjectURL, format: .png)
+        do {
+            try await BackgroundRemover.removeBackground(subjectURL, to: cutoutURL)
+            let cutout = try ImageIOBridge.load(cutoutURL), px = pixels(cutout)
+            check(cutout.width == 400 && cutout.height == 300 && px[3] < 10 && px[(150 * 400 + 200) * 4 + 3] > 245, "background removal keeps size, clears corners, keeps subject")
+        } catch OpenTangerineError.invalidInput(let message) {
+            check(message.contains("No clear subject"), "background removal reports a missing subject clearly")
+        }
         print("Image tool failures: \(failures)")
         if failures > 0 { exit(1) }
     }

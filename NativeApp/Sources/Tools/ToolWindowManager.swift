@@ -32,6 +32,11 @@ final class ToolWindowManager: NSObject, NSWindowDelegate {
 
     func open(_ tool: ToolID, files: [URL]) {
         guard !files.isEmpty else { return }
+        // One-step tools have no settings, so they run straight away instead of opening a window.
+        if tool == .removeBackground {
+            BackgroundRemover.run(files)
+            return
+        }
         let session = ToolSession(tool: tool, files: files)
         let root = ToolRootView(session: session)
             .environmentObject(AppSettings.shared)
@@ -125,6 +130,7 @@ struct ToolRootView: View {
             case .compress: CompressToolView(session: session)
             case .editMetadata: MetadataToolView(session: session)
             case .editImage: EditImageToolView(session: session)
+            case .removeBackground: EmptyView()
             case .frameImage: FrameImageToolView(session: session)
             case .cropImage: CropImageToolView(session: session)
             case .redactImage: RedactImageToolView(session: session)
