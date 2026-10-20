@@ -169,7 +169,12 @@ final class RadialController: DragMonitorDelegate {
             view.items = ToolID.available(for: formats).map(RadialItem.init(tool:))
             view.emptyMessage = "No tools for this selection"
         } else {
-            view.items = ConversionMatrix.targets(for: formats).map(RadialItem.init(format:))
+            var items = ConversionMatrix.targets(for: formats).map(RadialItem.init(format:))
+            // Compress sits beside the formats for images and PDFs, so it is one Shift-drag away.
+            if ToolID.compress.applies(to: formats), formats.allSatisfy({ $0.category == .image || $0 == .pdf }) {
+                items.append(RadialItem(tool: .compress))
+            }
+            view.items = items
             view.emptyMessage = count > 1 ? "No shared conversion for these files" : "No conversions available"
         }
     }
