@@ -228,18 +228,43 @@ enum Compressor {
         // Stage 1 keeps text and vectors sharp and only shrinks embedded images.
         let vector = try await fitPDF(targetBytes: targetBytes, in: directory, name: "vector", attempt: report) { loss, output in
             try await ghostscriptPDF(url, step: vectorStep(loss), to: output)
+            try await repackPDF(output)
         }
         if let fit = vector.fit {
             try fm.moveItem(at: fit, to: destination)
             return
         }
-        // Stage 2: text-heavy PDFs have no images left to shrink. A target is a promise, so pages
-        // are saved as JPEG images at the sharpest rendering that still fits.
-        let raster = try await fitPDF(targetBytes: targetBytes, in: directory, name: "raster", attempt: report) { loss, output in
-            try await rasterizedPDF(url, step: rasterStep(loss), to: output)
+        // Stage 2: text-heavy PDFs have no images left to shrink. A target is a promise, so pages are
+        // saved as images. Lossless (Flate) page images keep letter edges clean and stay small for text.
+        let flate = try await fitPDF(targetBytes: targetBytes, in: directory, name: "flate", attempt: report) { loss, output in
+            try await rasterizedPDF(url, dpi: flateDPI(loss), jpegQuality: nil, to: output)
+            try await repackPDF(output)
         }
-        let chosen = raster.fit ?? (raster.smallest.size < vector.smallest.size ? raster.smallest.url : vector.smallest.url)
+        if let fit = flate.fit {
+            try fm.moveItem(at: fit, to: destination)
+            return
+        }
+        // Stage 3: photo-heavy pages compress better as JPEG.
+        let jpeg = try await fitPDF(targetBytes: targetBytes, in: directory, name: "jpeg", attempt: report) { loss, output in
+            let step = rasterStep(loss)
+            try await rasterizedPDF(url, dpi: step.dpi, jpegQuality: step.jpegQuality, to: output)
+        }
+        let chosen = jpeg.fit ?? [vector.smallest, flate.smallest, jpeg.smallest].min { $0.size < $1.size }!.url
         try fm.moveItem(at: chosen, to: destination)
+    }
+
+    /// qpdf object streams squeeze a few more percent out of Ghostscript output; kept only when smaller.
+    static func repackPDF(_ url: URL) async throws {
+        guard ExternalTool.qpdf.isAvailable else { return }
+        let packed = url.deletingLastPathComponent().appendingPathComponent("packed-\(UUID().uuidString).pdf")
+        defer { try? FileManager.default.removeItem(at: packed) }
+        guard (try? await compressLossless(url, format: .pdf, to: packed)) != nil,
+              FileSizeFormatter.size(of: packed) < FileSizeFormatter.size(of: url) else { return }
+        _ = try FileManager.default.replaceItemAt(url, withItemAt: packed)
+    }
+
+    static func flateDPI(_ loss: Double) -> Int {
+        Int((200 * pow(50.0 / 200, loss)).rounded())
     }
 
     /// Continuous loss scale from 0 (gentlest) to 1 (strongest), so a search can land just under the target.
@@ -276,12 +301,13 @@ enum Compressor {
         return (best.url, strongest)
     }
 
-    static func rasterizedPDF(_ url: URL, step: (dpi: Int, jpegQuality: Int), to destination: URL) async throws {
-        try await ExternalTool.ghostscript.run([
-            "-dSAFER", "-dBATCH", "-dNOPAUSE", "-dQUIET", "-sDEVICE=pdfimage24",
-            "-r\(step.dpi)", "-sCompression=JPEG", "-dJPEGQ=\(step.jpegQuality)",
-            "-o", destination.path, url.path,
-        ], purpose: "Compressing PDF")
+    /// Saves each page as one image: JPEG at the given quality, or lossless Flate when quality is nil.
+    static func rasterizedPDF(_ url: URL, dpi: Int, jpegQuality: Int?, to destination: URL) async throws {
+        let encoding = jpegQuality.map { ["-sCompression=JPEG", "-dJPEGQ=\($0)"] } ?? ["-sCompression=Flate"]
+        try await ExternalTool.ghostscript.run(
+            ["-dSAFER", "-dBATCH", "-dNOPAUSE", "-dQUIET", "-sDEVICE=pdfimage24", "-r\(dpi)"] + encoding + ["-o", destination.path, url.path],
+            purpose: "Compressing PDF"
+        )
     }
 
     /// The smallest a PDF can get without rasterizing pages: lossless re-pack or the most aggressive image step.
@@ -295,6 +321,7 @@ enum Compressor {
         }
         let strongest = directory.appendingPathComponent("min-step-\(UUID().uuidString).pdf")
         try await ghostscriptPDF(url, step: vectorStep(1), to: strongest)
+        try await repackPDF(strongest)
         smallest = min(smallest, FileSizeFormatter.size(of: strongest))
         try? FileManager.default.removeItem(at: strongest)
         return smallest
