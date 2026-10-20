@@ -11,6 +11,8 @@ final class Job: ObservableObject, Identifiable {
     @Published var status: Status = .waiting
     /// Shown instead of "Done", for example "2.4 MB → 196 KB (−92%)".
     @Published var summary: String?
+    /// The job finished but missed its target size; the notch stays up so the result can be read.
+    @Published var missedTarget = false
     var outputs: [URL] = []
     var sizeSource: URL?
     var targetBytes: Int64?
@@ -112,6 +114,7 @@ final class JobRunner: ObservableObject {
                 try Task.checkCancellation()
                 job.outputs = outputs
                 job.summary = Self.sizeSummary(job, outputs: outputs)
+                if let target = job.targetBytes, outputs.count == 1 { job.missedTarget = FileSizeFormatter.size(of: outputs[0]) > target }
                 job.progress = 1
                 job.status = .done
                 DiagnosticLog.log("job done: \(job.detail) -> \(outputs.map(\.lastPathComponent))")
@@ -176,7 +179,7 @@ final class JobRunner: ObservableObject {
         let saved = Int(((1 - Double(after) / Double(before)) * 100).rounded())
         var text = "\(FileSizeFormatter.string(before)) → \(FileSizeFormatter.string(after))"
         if saved > 0 { text += " (−\(saved)%)" }
-        if let target = job.targetBytes, after > target { text += " · above \(FileSizeFormatter.string(target)) target" }
+        if let target = job.targetBytes, after > target { text += " · smallest possible, target was \(FileSizeFormatter.string(target))" }
         return text
     }
 
@@ -216,7 +219,7 @@ final class JobRunner: ObservableObject {
         guard !jobs.isEmpty else { return }
         guard AppSettings.shared.progressStyle == .pill || !resultsHovered else { return }
         guard jobs.allSatisfy({ $0.status.isFinished }) else { return }
-        guard !jobs.contains(where: { if case .failed = $0.status { return true }; return false }) else { return }
+        guard !jobs.contains(where: { if case .failed = $0.status { return true }; return $0.missedTarget }) else { return }
         hideWorkItem?.cancel()
         let item = DispatchWorkItem { [weak self] in
             guard let self else { return }
@@ -549,13 +552,14 @@ struct JobPillRow: View {
 
     private var tint: Color {
         if failed { return .red }
+        if job.missedTarget { return .orange }
         return showsCancel ? .secondary : Theme.accent
     }
 
     private var symbol: String {
         switch job.status {
         case .failed: return "exclamationmark.triangle.fill"
-        case .done: return "checkmark.circle.fill"
+        case .done: return job.missedTarget ? "exclamationmark.circle.fill" : "checkmark.circle.fill"
         case .cancelled: return "xmark.circle"
         case .waiting, .running: return job.symbol
         }

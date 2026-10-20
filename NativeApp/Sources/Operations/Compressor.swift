@@ -209,6 +209,22 @@ enum Compressor {
         try fm.moveItem(at: chosen, to: destination)
     }
 
+    /// The smallest a PDF can get without rasterizing pages: lossless re-pack or the most aggressive image step.
+    static func smallestPDFSize(_ url: URL, in directory: URL) async throws -> Int64 {
+        var smallest = FileSizeFormatter.size(of: url)
+        if ExternalTool.qpdf.isAvailable {
+            let lossless = directory.appendingPathComponent("min-lossless-\(UUID().uuidString).pdf")
+            try await compressLossless(url, format: .pdf, to: lossless)
+            smallest = min(smallest, FileSizeFormatter.size(of: lossless))
+            try? FileManager.default.removeItem(at: lossless)
+        }
+        let strongest = directory.appendingPathComponent("min-step-\(UUID().uuidString).pdf")
+        try await ghostscriptPDF(url, step: pdfSteps[pdfSteps.count - 1], to: strongest)
+        smallest = min(smallest, FileSizeFormatter.size(of: strongest))
+        try? FileManager.default.removeItem(at: strongest)
+        return smallest
+    }
+
     static func ghostscriptPDF(_ url: URL, step: (dpi: Int, qFactor: Double), to destination: URL) async throws {
         let sampling = "/QFactor \(step.qFactor) /Blend 1 /HSamples [2 1 1 2] /VSamples [2 1 1 2]"
         try await ExternalTool.ghostscript.run([
