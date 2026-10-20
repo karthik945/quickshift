@@ -8,6 +8,7 @@ enum FormatCategory: String, CaseIterable {
     case document
     case subtitle
     case archive
+    case design
 
     var symbol: String {
         switch self {
@@ -17,6 +18,7 @@ enum FormatCategory: String, CaseIterable {
         case .document: return "doc.text"
         case .subtitle: return "captions.bubble"
         case .archive: return "archivebox"
+        case .design: return "paintbrush.pointed"
         }
     }
 
@@ -28,6 +30,7 @@ enum FormatCategory: String, CaseIterable {
         case .document: return "Document"
         case .subtitle: return "Subtitle"
         case .archive: return "Archive"
+        case .design: return "Design"
         }
     }
 }
@@ -39,6 +42,7 @@ enum FileFormat: String, CaseIterable, Identifiable, Hashable {
     case pdf, docx, txt
     case srt, vtt
     case zip, tar, gz, rar
+    case ai, eps, psd
 
     var id: String { rawValue }
 
@@ -48,6 +52,7 @@ enum FileFormat: String, CaseIterable, Identifiable, Hashable {
     static let video: [FileFormat] = [.mp4, .mov, .mkv, .webm, .avi, .wmv]
     static let subtitles: [FileFormat] = [.srt, .vtt]
     static let archives: [FileFormat] = [.zip, .tar, .gz, .rar]
+    static let designs: [FileFormat] = [.ai, .eps, .psd]
 
     var category: FormatCategory {
         switch self {
@@ -58,6 +63,7 @@ enum FileFormat: String, CaseIterable, Identifiable, Hashable {
         case .pdf, .docx, .txt: return .document
         case .srt, .vtt: return .subtitle
         case .zip, .tar, .gz, .rar: return .archive
+        case .ai, .eps, .psd: return .design
         }
     }
 
@@ -86,6 +92,7 @@ enum FileFormat: String, CaseIterable, Identifiable, Hashable {
         case .gz: return ["gz", "tgz"]
         case .txt: return ["txt", "text", "md", "log"]
         case .aiff: return ["aiff", "aif"]
+        case .eps: return ["eps", "epsf"]
         default: return [rawValue]
         }
     }
@@ -124,6 +131,9 @@ enum FileFormat: String, CaseIterable, Identifiable, Hashable {
         case .tar: return UTType("public.tar-archive")
         case .gz: return .gzip
         case .rar: return UTType("com.rarlab.rar-archive")
+        case .ai: return UTType("com.adobe.illustrator.ai-image")
+        case .eps: return UTType("com.adobe.encapsulated-postscript")
+        case .psd: return UTType("com.adobe.photoshop-image")
         }
     }
 

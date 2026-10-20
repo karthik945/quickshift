@@ -15,6 +15,7 @@ protocol ConversionEngine {
 
 enum Engines {
     static let all: [ConversionEngine] = [
+        DesignEngine(),
         ImageEngine(),
         AudioEngine(),
         VideoEngine(),

@@ -1,9 +1,18 @@
 import AVFoundation
 import Foundation
+import ImageIO
 
 enum Compressor {
+    /// Set while the Compress window measures each level; tools then run at low priority with quicker settings.
+    @TaskLocal static var isEstimating = false
+
     static func compress(_ url: URL, preset: CompressionPreset, resizeLongEdge: Int, targetBytes: Int64?, to destination: URL, progress: @escaping (Double) -> Void) async throws {
         guard let format = FileFormat.detect(url) else { throw OpenTangerineError.unreadable(url) }
+        if preset == .lossless && targetBytes == nil {
+            try await compressLossless(url, format: format, to: destination)
+            progress(1)
+            return
+        }
         switch format.category {
         case .image:
             try await compressImage(url, format: format, preset: preset, resizeLongEdge: resizeLongEdge, targetBytes: targetBytes, to: destination, progress: progress)
@@ -12,10 +21,49 @@ enum Compressor {
         case .audio:
             try await compressAudio(url, format: format, preset: preset, targetBytes: targetBytes, to: destination, progress: progress)
         case .document where format == .pdf:
-            try PDFOps.compress(url, strong: preset == .strong, to: destination)
+            try await compressPDF(url, preset: preset, targetBytes: targetBytes, to: destination, progress: progress)
             progress(1)
         default:
             throw OpenTangerineError.invalidInput("\(format.displayName) files can't be compressed. Convert to ZIP instead.")
+        }
+    }
+
+    static let losslessFormats: Set<FileFormat> = [.png, .jpg, .pdf]
+
+    static func supportsLossless(_ urls: [URL]) -> Bool {
+        !urls.isEmpty && urls.allSatisfy { FileFormat.detect($0).map(losslessFormats.contains) ?? false }
+    }
+
+    static func outputFormat(for url: URL, preset: CompressionPreset) -> FileFormat {
+        if preset == .lossless, let format = FileFormat.detect(url), losslessFormats.contains(format) { return format }
+        return outputFormat(for: url)
+    }
+
+    /// Re-packs the file without touching pixels or page content. The result is never larger than the original.
+    static func compressLossless(_ url: URL, format: FileFormat, to destination: URL) async throws {
+        switch format {
+        case .png:
+            try await ExternalTool.oxipng.run(["-o", isEstimating ? "2" : "4", "--strip", "safe", "--out", destination.path, url.path], purpose: "Lossless PNG compression")
+        case .jpg:
+            // Strip metadata only when nothing visible depends on it: no EXIF rotation and no non-sRGB color profile.
+            let properties = ImageIOBridge.properties(url)
+            let orientation = (properties[kCGImagePropertyOrientation] as? NSNumber)?.intValue ?? 1
+            let profile = properties[kCGImagePropertyProfileName] as? String
+            let strip = orientation == 1 && (profile == nil || profile!.contains("sRGB"))
+            try await ExternalTool.jpegtran.run(["-copy", strip ? "none" : "all", "-optimize", "-progressive", "-outfile", destination.path, url.path], purpose: "Lossless JPEG compression")
+        case .pdf:
+            // qpdf exits with 3 when it succeeded but repaired warnings in the source.
+            try await ExternalTool.qpdf.run(
+                ["--object-streams=generate", "--compress-streams=y", "--recompress-flate", "--compression-level=9", "--remove-unreferenced-resources=yes", url.path, destination.path],
+                purpose: "Lossless PDF compression", acceptedStatuses: [0, 3]
+            )
+        default:
+            throw OpenTangerineError.invalidInput("Lossless compression supports PNG, JPEG and PDF files.")
+        }
+        let fm = FileManager.default
+        if !fm.fileExists(atPath: destination.path) || FileSizeFormatter.size(of: destination) >= FileSizeFormatter.size(of: url) {
+            try? fm.removeItem(at: destination)
+            try fm.copyItem(at: url, to: destination)
         }
     }
 
@@ -60,6 +108,11 @@ enum Compressor {
         }
 
         guard targetBytes > 0 else { throw OpenTangerineError.invalidInput("Target size must be greater than zero.") }
+        // Prefer a lossless re-pack when it already fits, so quality is only reduced when needed.
+        if resizeLongEdge == 0, finalFormat == format, losslessFormats.contains(format), (try? await compressLossless(url, format: format, to: destination)) != nil {
+            if FileSizeFormatter.size(of: destination) <= targetBytes { progress(1); return }
+            try? FileManager.default.removeItem(at: destination)
+        }
         if finalFormat == .png {
             var candidate = image
             for attempt in 0..<12 {
@@ -104,6 +157,71 @@ enum Compressor {
             try await ImageIOBridge.writeAnyFormat(candidate, to: destination, format: finalFormat, quality: best)
         }
         progress(1)
+    }
+
+    /// Image downsampling (DPI) and JPEG QFactor steps, from least to most loss. Text and vectors stay sharp at every step.
+    static let pdfSteps: [(dpi: Int, qFactor: Double)] = [(300, 0.15), (220, 0.25), (150, 0.4), (120, 0.6), (96, 0.76), (72, 1.0), (60, 1.3), (45, 1.8)]
+
+    static func compressPDF(_ url: URL, preset: CompressionPreset, targetBytes: Int64?, to destination: URL, progress: @escaping (Double) -> Void) async throws {
+        let fm = FileManager.default
+        guard ExternalTool.ghostscript.isAvailable else {
+            if targetBytes != nil { throw OpenTangerineError.toolMissing(tool: "gs", package: "ghostscript", purpose: "Compressing a PDF to a target size") }
+            try PDFOps.compress(url, strong: preset == .strong, to: destination)
+            return
+        }
+        guard let targetBytes else {
+            try await ghostscriptPDF(url, step: pdfSteps[preset == .strong ? 4 : 2], to: destination)
+            if FileSizeFormatter.size(of: destination) >= FileSizeFormatter.size(of: url) {
+                try? fm.removeItem(at: destination)
+                try fm.copyItem(at: url, to: destination)
+            }
+            return
+        }
+        guard targetBytes > 0 else { throw OpenTangerineError.invalidInput("Target size must be greater than zero.") }
+        if ExternalTool.qpdf.isAvailable {
+            try await compressLossless(url, format: .pdf, to: destination)
+        } else {
+            try fm.copyItem(at: url, to: destination)
+        }
+        if FileSizeFormatter.size(of: destination) <= targetBytes { return }
+        try? fm.removeItem(at: destination)
+        progress(0.1)
+
+        // Binary search for the least lossy step that fits; keep the smallest attempt if none does.
+        let directory = fm.temporaryDirectory.appendingPathComponent("opentangerine-pdf-\(UUID().uuidString)")
+        try fm.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: directory) }
+        var low = 0, high = pdfSteps.count - 1, attempts = 0
+        var best: URL?
+        var smallest: (url: URL, size: Int64)?
+        while low <= high {
+            try Task.checkCancellation()
+            let mid = (low + high) / 2
+            let candidate = directory.appendingPathComponent("step-\(mid).pdf")
+            try await ghostscriptPDF(url, step: pdfSteps[mid], to: candidate)
+            let size = FileSizeFormatter.size(of: candidate)
+            if smallest == nil || size < smallest!.size { smallest = (candidate, size) }
+            if size <= targetBytes { best = candidate; high = mid - 1 } else { low = mid + 1 }
+            attempts += 1
+            progress(0.1 + 0.85 * Double(attempts) / 4)
+        }
+        guard let chosen = best ?? smallest?.url else { throw OpenTangerineError.encodeFailed(destination.lastPathComponent) }
+        try fm.moveItem(at: chosen, to: destination)
+    }
+
+    static func ghostscriptPDF(_ url: URL, step: (dpi: Int, qFactor: Double), to destination: URL) async throws {
+        let sampling = "/QFactor \(step.qFactor) /Blend 1 /HSamples [2 1 1 2] /VSamples [2 1 1 2]"
+        try await ExternalTool.ghostscript.run([
+            "-dSAFER", "-dBATCH", "-dNOPAUSE", "-dQUIET", "-sDEVICE=pdfwrite", "-dCompatibilityLevel=1.6",
+            "-dDetectDuplicateImages=true", "-dCompressFonts=true", "-dSubsetFonts=true",
+            "-dDownsampleColorImages=true", "-dDownsampleGrayImages=true", "-dDownsampleMonoImages=true",
+            "-dColorImageDownsampleType=/Bicubic", "-dGrayImageDownsampleType=/Bicubic",
+            "-dColorImageDownsampleThreshold=1.0", "-dGrayImageDownsampleThreshold=1.0",
+            "-dColorImageResolution=\(step.dpi)", "-dGrayImageResolution=\(step.dpi)", "-dMonoImageResolution=\(max(step.dpi * 2, 300))",
+            "-o", destination.path,
+            "-c", "<< /ColorACSImageDict << \(sampling) >> /GrayACSImageDict << \(sampling) >> >> setdistillerparams",
+            "-f", url.path,
+        ], purpose: "Compressing PDF")
     }
 
     static func compressAudio(_ url: URL, format: FileFormat, preset: CompressionPreset, targetBytes: Int64?, to destination: URL, progress: @escaping (Double) -> Void) async throws {

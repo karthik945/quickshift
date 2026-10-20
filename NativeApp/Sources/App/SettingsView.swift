@@ -269,9 +269,27 @@ struct SettingsView: View {
         } header: {
             Text("Compression")
         } footer: {
-            Text(settings.compressionPreset == .balanced
-                 ? "Balanced keeps detail while trimming size noticeably."
-                 : "Strong prioritizes the smallest file, with visible quality loss.")
+            Text(settings.compressionPreset.summary + (settings.compressionPreset == .lossless ? " PNG, JPEG and PDF only; other files use Balanced." : ""))
+        }
+        Section {
+            ForEach(ExternalTool.allCases) { tool in
+                let path = tool.path
+                HStack(alignment: .firstTextBaseline, spacing: 6) {
+                    Image(systemName: path == nil ? "xmark.circle" : "checkmark.circle.fill")
+                        .foregroundStyle(path == nil ? Color.secondary : Color.green)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("\(tool.executable) · \(tool.usage)")
+                        Text(path ?? "Not found. Install with `brew install \(tool.package)`.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .textSelection(.enabled)
+                    }
+                }
+            }
+        } header: {
+            Text("Design files & lossless tools (optional)")
+        } footer: {
+            Text("Everything runs locally. Illustrator, EPS and Photoshop files convert to PNG, JPEG and PDF natively when saved with PDF compatibility; vector SVG and EPS input use these tools.")
         }
         Section {
             HStack {

@@ -4,6 +4,7 @@ import Combine
 import ServiceManagement
 
 enum CompressionPreset: String, CaseIterable, Identifiable {
+    case lossless
     case balanced
     case strong
 
@@ -11,10 +12,37 @@ enum CompressionPreset: String, CaseIterable, Identifiable {
 
     var title: String { rawValue.capitalized }
 
-    var imageQuality: Double { self == .balanced ? 0.72 : 0.5 }
-    var videoScale: Double { self == .balanced ? 1.0 : 0.75 }
-    var videoBitrateFactor: Double { self == .balanced ? 0.6 : 0.35 }
-    var audioBitrate: Int { self == .balanced ? 128_000 : 64_000 }
+    var summary: String {
+        switch self {
+        case .lossless: return "Identical pixels and pages; only wasted space is removed."
+        case .balanced: return "Noticeably smaller with little visible change."
+        case .strong: return "Smallest output; quality loss is visible."
+        }
+    }
+
+    // Lossless never re-encodes media; these values only keep the lossy paths total.
+    var imageQuality: Double {
+        switch self {
+        case .lossless: return 1.0
+        case .balanced: return 0.72
+        case .strong: return 0.5
+        }
+    }
+    var videoScale: Double { self == .strong ? 0.75 : 1.0 }
+    var videoBitrateFactor: Double {
+        switch self {
+        case .lossless: return 1.0
+        case .balanced: return 0.6
+        case .strong: return 0.35
+        }
+    }
+    var audioBitrate: Int {
+        switch self {
+        case .lossless: return 256_000
+        case .balanced: return 128_000
+        case .strong: return 64_000
+        }
+    }
 }
 
 enum OutputLocation: String, CaseIterable, Identifiable {

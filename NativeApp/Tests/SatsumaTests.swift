@@ -40,8 +40,25 @@ struct OpenTangerineTests {
         let runner = TestRunner()
 
         runner.test("conversion matrix excludes disabled archives") {
-            try expectEqual(ConversionMatrix.totalConversions, 176)
+            try expectEqual(ConversionMatrix.totalConversions, 194)
             try expectEqual(ConversionMatrix.targets(for: .zip).count, 0)
+        }
+
+        runner.test("design files convert to SVG and raster formats") {
+            try expectEqual(FileFormat.detect(URL(fileURLWithPath: "/tmp/Logo.AI")), .ai)
+            try expectEqual(FileFormat.detect(URL(fileURLWithPath: "/tmp/a.epsf")), .eps)
+            try expectEqual(FileFormat.detect(URL(fileURLWithPath: "/tmp/a.psd")), .psd)
+            for format in FileFormat.designs {
+                try expectEqual(format.category, .design)
+                for target: FileFormat in format == .psd ? [.png, .jpg, .pdf] : [.svg, .png, .jpg, .pdf] {
+                    try expect(ConversionMatrix.targets(for: format).contains(target), "\(format) → \(target)")
+                    try expect(Engines.engine(from: format, to: target) is DesignEngine, "\(format) → \(target) engine")
+                }
+            }
+            try expect(ToolID.available(for: [.psd]).isEmpty, "design files have no tools")
+            try expect(ConversionMatrix.targets(for: .ai).contains(.eps), "ai → eps")
+            try expect(!ConversionMatrix.targets(for: .psd).contains(.svg), "psd is pixels, no svg")
+            try expect(!ConversionMatrix.targets(for: .ai).contains(.heic), "design lists stay focused")
         }
 
         runner.test("25 advanced tools") {
@@ -190,6 +207,7 @@ struct OpenTangerineTests {
 
         runner.test("compression presets") {
             try expect(CompressionPreset.strong.imageQuality < CompressionPreset.balanced.imageQuality, "strong is smaller")
+            try expect(CompressionPreset.balanced.imageQuality < CompressionPreset.lossless.imageQuality, "lossless keeps quality")
             try expect(CompressionPreset.strong.videoBitrateFactor < CompressionPreset.balanced.videoBitrateFactor, "strong video")
             try expectEqual(Compressor.outputFormat(for: URL(fileURLWithPath: "/tmp/a.svg")), .jpg)
             try expectEqual(Compressor.outputFormat(for: URL(fileURLWithPath: "/tmp/a.jpg")), .jpg)

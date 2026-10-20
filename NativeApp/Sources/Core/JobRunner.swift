@@ -9,7 +9,11 @@ final class Job: ObservableObject, Identifiable {
     let symbol: String
     @Published var progress: Double = 0
     @Published var status: Status = .waiting
+    /// Shown instead of "Done", for example "2.4 MB → 196 KB (−92%)".
+    @Published var summary: String?
     var outputs: [URL] = []
+    var sizeSource: URL?
+    var targetBytes: Int64?
     var task: Task<Void, Never>?
 
     enum Status: Equatable {
@@ -107,6 +111,7 @@ final class JobRunner: ObservableObject {
                 let outputs = try await work(progress)
                 try Task.checkCancellation()
                 job.outputs = outputs
+                job.summary = Self.sizeSummary(job, outputs: outputs)
                 job.progress = 1
                 job.status = .done
                 DiagnosticLog.log("job done: \(job.detail) -> \(outputs.map(\.lastPathComponent))")
@@ -157,8 +162,22 @@ final class JobRunner: ObservableObject {
         dismissAll()
     }
 
-    func run(title: String, detail: String, symbol: String = "arrow.triangle.2.circlepath", work: @escaping (@escaping (Double) -> Void) async throws -> [URL]) {
-        enqueue(Job(title: title, detail: detail, symbol: symbol), work: work)
+    func run(title: String, detail: String, symbol: String = "arrow.triangle.2.circlepath", sizeSource: URL? = nil, targetBytes: Int64? = nil, work: @escaping (@escaping (Double) -> Void) async throws -> [URL]) {
+        let job = Job(title: title, detail: detail, symbol: symbol)
+        job.sizeSource = sizeSource
+        job.targetBytes = targetBytes
+        enqueue(job, work: work)
+    }
+
+    private static func sizeSummary(_ job: Job, outputs: [URL]) -> String? {
+        guard let source = job.sizeSource, outputs.count == 1 else { return nil }
+        let before = FileSizeFormatter.size(of: source), after = FileSizeFormatter.size(of: outputs[0])
+        guard before > 0 else { return nil }
+        let saved = Int(((1 - Double(after) / Double(before)) * 100).rounded())
+        var text = "\(FileSizeFormatter.string(before)) → \(FileSizeFormatter.string(after))"
+        if saved > 0 { text += " (−\(saved)%)" }
+        if let target = job.targetBytes, after > target { text += " · above \(FileSizeFormatter.string(target)) target" }
+        return text
     }
 
     func watchWheel(label: String? = nil, direction: CGFloat = 0) {
@@ -501,7 +520,7 @@ struct JobPillRow: View {
             .disabled(!showsCancel)
             .help(showsCancel ? "Cancel" : "")
             if showsLabel {
-                Text(job.detail)
+                Text(job.status == .done ? job.summary ?? job.detail : job.detail)
                     .font(.caption2)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
@@ -599,7 +618,7 @@ struct JobCardView: View {
         switch job.status {
         case .waiting: return "\(job.detail) · Waiting"
         case .running: return "\(job.detail) · \(Int((job.progress * 100).rounded()))%"
-        case .done: return "\(job.detail) · Done"
+        case .done: return "\(job.detail) · \(job.summary ?? "Done")"
         case .cancelled: return "\(job.detail) · Cancelled"
         case .failed(let message): return "\(job.detail) · \(message)"
         }
