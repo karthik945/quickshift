@@ -241,6 +241,28 @@ import ImageIO
             count += 1
             print("PASS mozjpeg encode \(FileSizeFormatter.size(of: moz)) bytes")
         }
+        // SVG compression stays vector and removes editor junk.
+        if ExternalTool.svgo.isAvailable {
+            let svg = root.appendingPathComponent("icon.svg")
+            let source = """
+            <?xml version="1.0" encoding="utf-8"?>
+            <!-- Generator: Adobe Illustrator 28.0.0, SVG Export Plug-In -->
+            <svg version="1.1" id="Layer_1" xmlns="http://www.w3.org/2000/svg" x="0px" y="0px" viewBox="0 0 200 200" style="enable-background:new 0 0 200 200;" xml:space="preserve">
+            <style type="text/css">.st0{fill:#FF5C00;}</style>
+            <g id="Group_1"><g><circle class="st0" cx="100.000000" cy="100.000000" r="80.000000"/></g></g>
+            </svg>
+            """
+            try Data(source.utf8).write(to: svg)
+            for preset in CompressionPreset.allCases {
+                let output = root.appendingPathComponent("icon-\(preset.rawValue).\(Compressor.outputFormat(for: svg, preset: preset).fileExtension)")
+                try await Compressor.compress(svg, preset: preset, resizeLongEdge: 0, targetBytes: nil, to: output) { _ in }
+                let text = try String(contentsOf: output, encoding: .utf8)
+                precondition(output.pathExtension == "svg" && text.contains("<circle") && text.contains("viewBox") && !text.contains("Illustrator"), "\(preset) SVG stays vector and drops editor junk")
+                precondition(FileSizeFormatter.size(of: output) < FileSizeFormatter.size(of: svg) / 2, "\(preset) SVG shrinks")
+            }
+            count += 1
+            print("PASS svg optimize \(FileSizeFormatter.size(of: svg)) bytes -> vector at every level")
+        }
         print("DESIGN RESULT: \(count) passed")
     }
 }

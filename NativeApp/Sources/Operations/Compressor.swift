@@ -13,6 +13,11 @@ enum Compressor {
             progress(1)
             return
         }
+        if format == .svg {
+            try await compressSVG(url, preset: preset, targetBytes: targetBytes, to: destination)
+            progress(1)
+            return
+        }
         switch format.category {
         case .image:
             try await compressImage(url, format: format, preset: preset, resizeLongEdge: resizeLongEdge, targetBytes: targetBytes, to: destination, progress: progress)
@@ -28,7 +33,7 @@ enum Compressor {
         }
     }
 
-    static let losslessFormats: Set<FileFormat> = [.png, .jpg, .pdf]
+    static let losslessFormats: Set<FileFormat> = [.png, .jpg, .pdf, .svg]
 
     static func supportsLossless(_ urls: [URL]) -> Bool {
         !urls.isEmpty && urls.allSatisfy { FileFormat.detect($0).map(losslessFormats.contains) ?? false }
@@ -57,8 +62,10 @@ enum Compressor {
                 ["--object-streams=generate", "--compress-streams=y", "--recompress-flate", "--compression-level=9", "--remove-unreferenced-resources=yes", url.path, destination.path],
                 purpose: "Lossless PDF compression", acceptedStatuses: [0, 3]
             )
+        case .svg:
+            try await optimizeSVG(url, precision: 6, to: destination)
         default:
-            throw OpenTangerineError.invalidInput("Lossless compression supports PNG, JPEG and PDF files.")
+            throw OpenTangerineError.invalidInput("Lossless compression supports PNG, JPEG, PDF and SVG files.")
         }
         let fm = FileManager.default
         if !fm.fileExists(atPath: destination.path) || FileSizeFormatter.size(of: destination) >= FileSizeFormatter.size(of: url) {
@@ -75,7 +82,8 @@ enum Compressor {
             case .png:
                 if let image = try? ImageIOBridge.load(url), image.alphaInfo != .none && image.alphaInfo != .noneSkipLast && image.alphaInfo != .noneSkipFirst { return .png }
                 return .jpg
-            case .bmp, .tiff, .svg: return .jpg
+            case .svg: return .svg
+            case .bmp, .tiff: return .jpg
             case .avif, .webp: return ImageIOBridge.canEncodeNatively(format) || FFmpeg.isAvailable ? format : .jpg
             default: return format
             }
@@ -253,6 +261,41 @@ enum Compressor {
             if FileSizeFormatter.size(of: candidate) <= budget { best = candidate; low = mid + 1 } else { high = mid - 1 }
         }
         if let best { _ = try FileManager.default.replaceItemAt(url, withItemAt: best) }
+    }
+
+    /// Decimal places kept in coordinates: 6 is exact for any practical size, 3 and 2 are visually identical
+    /// at normal sizes, and lower values trade tiny shape shifts for size.
+    static func svgPrecision(_ preset: CompressionPreset) -> Int {
+        switch preset {
+        case .lossless: return 6
+        case .balanced: return 3
+        case .strong: return 2
+        }
+    }
+
+    /// SVG stays vector: svgo removes editor metadata, merges styles and shortens paths.
+    static func compressSVG(_ url: URL, preset: CompressionPreset, targetBytes: Int64?, to destination: URL) async throws {
+        let fm = FileManager.default
+        guard let targetBytes else {
+            try await optimizeSVG(url, precision: svgPrecision(preset), to: destination)
+            if FileSizeFormatter.size(of: destination) >= FileSizeFormatter.size(of: url) {
+                try fm.removeItem(at: destination)
+                try fm.copyItem(at: url, to: destination)
+            }
+            return
+        }
+        // Most precise version that fits; otherwise the smallest one, which the notch flags.
+        for precision in [6, 3, 2, 1] {
+            try? fm.removeItem(at: destination)
+            try await optimizeSVG(url, precision: precision, to: destination)
+            if FileSizeFormatter.size(of: destination) <= targetBytes { return }
+        }
+    }
+
+    static func optimizeSVG(_ url: URL, precision: Int, to destination: URL) async throws {
+        try await ExternalTool.svgo.run(["-q", "-i", url.path, "-o", destination.path, "-p", "\(precision)", "--multipass"], purpose: "SVG optimization")
+        // svgo can exit successfully without writing anything, so check the result exists.
+        guard FileManager.default.fileExists(atPath: destination.path) else { throw OpenTangerineError.encodeFailed(destination.lastPathComponent) }
     }
 
     /// Reduces a PNG to a smart palette. Returns false when pngquant can't reach the minimum quality.

@@ -25,6 +25,15 @@ struct DesignEngine: ConversionEngine {
         case .svg:
             // SVG holds a single page, so only the first artboard is exported.
             try await ExternalTool.pdftocairo.run(["-svg", "-f", "1", "-l", "1", pdf.url.path, request.destination.path], purpose: "Converting \(request.sourceFormat.displayName) to SVG")
+            // pdftocairo nests glyphs in a way macOS apps can't draw; svgo flattens it and shrinks the file.
+            if ExternalTool.svgo.isAvailable {
+                let optimized = request.destination.deletingLastPathComponent().appendingPathComponent(".opentangerine-\(UUID().uuidString).svg")
+                if (try? await Compressor.optimizeSVG(request.destination, precision: 3, to: optimized)) != nil {
+                    _ = try FileManager.default.replaceItemAt(request.destination, withItemAt: optimized)
+                } else {
+                    try? FileManager.default.removeItem(at: optimized)
+                }
+            }
         case .pdf:
             try DesignFiles.redrawPDF(pdf.url, to: request.destination)
         case .eps:

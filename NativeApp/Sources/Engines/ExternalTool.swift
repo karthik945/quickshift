@@ -10,6 +10,7 @@ enum ExternalTool: String, CaseIterable, Identifiable {
     case jpegtran
     case pngquant
     case mozjpeg
+    case svgo
 
     var id: String { rawValue }
 
@@ -30,6 +31,7 @@ enum ExternalTool: String, CaseIterable, Identifiable {
         case .jpegtran: return "jpeg"
         case .pngquant: return "pngquant"
         case .mozjpeg: return "mozjpeg"
+        case .svgo: return "svgo"
         }
     }
 
@@ -42,6 +44,7 @@ enum ExternalTool: String, CaseIterable, Identifiable {
         case .jpegtran: return "Lossless JPEG compression"
         case .pngquant: return "Smaller PNGs that keep their size and transparency"
         case .mozjpeg: return "Sharper JPEGs at the same file size"
+        case .svgo: return "SVG optimization; cleaner SVGs from Illustrator and EPS"
         }
     }
 
