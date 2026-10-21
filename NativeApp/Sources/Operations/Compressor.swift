@@ -318,7 +318,7 @@ enum Compressor {
     static func compressPDF(_ url: URL, preset: CompressionPreset, targetBytes: Int64?, to destination: URL, progress: @escaping (Double) -> Void) async throws {
         let fm = FileManager.default
         guard ExternalTool.ghostscript.isAvailable else {
-            if targetBytes != nil { throw OpenTangerineError.toolMissing(tool: "gs", package: "ghostscript", purpose: "Compressing a PDF to a target size") }
+            if targetBytes != nil { throw OpenTangerineError.toolMissing(tool: "gs", install: ExternalTool.ghostscript.installCommand, purpose: "Compressing a PDF to a target size") }
             try PDFOps.compress(url, strong: preset == .strong, to: destination)
             return
         }
