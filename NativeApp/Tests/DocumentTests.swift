@@ -17,6 +17,8 @@ import PDFKit
         let text = "Open Tangerine document test\nCafé & <content>\n\nSecond paragraph."
         try text.write(to: url("input.txt"), atomically: true, encoding: .utf8)
         let pdf = try await convert(url("input.txt"), .txt, .pdf, "text.pdf")
+        // The checks below describe the built-in DOCX writer; pdf2docx is covered at the end.
+        PDFToDocx.allowExternalTool = false
         precondition(PDFDocument(url: pdf)!.string!.contains("Open Tangerine"))
         for target: FileFormat in [.png, .jpg, .srt, .vtt] {
             let out = try await convert(url("input.txt"), .txt, target, "text.\(target.fileExtension)")
@@ -92,5 +94,39 @@ import PDFKit
         precondition(SubtitleParser.format(59.9999, separator: ",") == "00:01:00,000")
         precondition(SubtitleParser.parseTimestamp("nan") == nil)
         print("PASS SRT/VTT round trip + both TXT exports; millisecond carry and invalid timestamp")
+
+        // A styled A4 page with a photo on it, like a typical report. Named fonts, as real PDFs embed them;
+        // the system UI font cannot be mapped back from a PDF.
+        let styled = url("styled.pdf")
+        var box = CGRect(x: 0, y: 0, width: 595, height: 842)
+        let context = CGContext(styled as CFURL, mediaBox: &box, nil)!
+        context.beginPDFPage(nil)
+        context.draw(try ImageIOBridge.load(url("text.jpg")), in: CGRect(x: 60, y: 300, width: 300, height: 200))
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = NSGraphicsContext(cgContext: context, flipped: false)
+        NSAttributedString(string: "Quarterly Report", attributes: [.font: NSFont(name: "Helvetica-Bold", size: 28)!, .foregroundColor: NSColor(srgbRed: 0.82, green: 0.27, blue: 0.12, alpha: 1)]).draw(at: CGPoint(x: 60, y: 760))
+        NSAttributedString(string: "Plain body text", attributes: [.font: NSFont(name: "Georgia", size: 12)!]).draw(at: CGPoint(x: 60, y: 720))
+        NSGraphicsContext.restoreGraphicsState()
+        context.endPDFPage()
+        context.closePDF()
+
+        let builtIn = try await convert(styled, .pdf, .docx, "styled-builtin.docx")
+        let builtInXML = try await Shell.run("/usr/bin/unzip", ["-p", builtIn.path, "word/document.xml"]).stdout
+        let builtInFiles = try await Shell.run("/usr/bin/unzip", ["-l", builtIn.path]).stdout
+        precondition(builtInXML.contains("Quarterly Report") && builtInXML.contains("Plain body text"), "text kept")
+        precondition(builtInXML.contains("<w:b/>") && builtInXML.contains("<w:color w:val=") && builtInXML.contains("<w:sz w:val=\"56\"/>"), "bold, colour and 28pt size kept")
+        precondition(builtInXML.contains("w:w=\"11900\" w:h=\"16840\""), "A4 page size kept")
+        precondition(builtInXML.contains("<w:drawing>") && builtInFiles.contains("word/media/image1."), "photo on a text page kept")
+        print("PASS built-in PDF -> DOCX keeps styling, page size and images on text pages")
+
+        if ExternalTool.pdf2docx.isAvailable {
+            PDFToDocx.allowExternalTool = true
+            let viaTool = try await convert(styled, .pdf, .docx, "styled-pdf2docx.docx")
+            let toolXML = try await Shell.run("/usr/bin/unzip", ["-p", viaTool.path, "word/document.xml"]).stdout
+            precondition(toolXML.contains("Quarterly Report") && toolXML.contains("<w:drawing>") && toolXML.contains("<w:b/>"), "pdf2docx layout")
+            print("PASS pdf2docx PDF -> DOCX keeps text, styling and images")
+        } else {
+            print("SKIP pdf2docx not installed")
+        }
     }
 }

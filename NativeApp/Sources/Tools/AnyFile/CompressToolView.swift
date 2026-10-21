@@ -268,8 +268,8 @@ struct CompressToolView: View {
                 return
             } catch {
                 if Task.isCancelled { return }
-                if case let OpenTangerineError.toolMissing(_, package, _) = error {
-                    estimateErrors[option] = "Needs `brew install \(package)`"
+                if case let OpenTangerineError.toolMissing(_, install, _) = error {
+                    estimateErrors[option] = "Needs `\(install)`"
                 } else {
                     estimateErrors[option] = "Couldn't estimate"
                 }

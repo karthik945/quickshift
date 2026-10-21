@@ -279,7 +279,7 @@ struct SettingsView: View {
                         .foregroundStyle(path == nil ? Color.secondary : Color.green)
                     VStack(alignment: .leading, spacing: 2) {
                         Text("\(tool.executable) · \(tool.usage)")
-                        Text(path ?? "Not found. Install with `brew install \(tool.package)`.")
+                        Text(path ?? "Not found. Install with `\(tool.installCommand)`.")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                             .textSelection(.enabled)

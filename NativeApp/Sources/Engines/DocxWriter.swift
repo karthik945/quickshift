@@ -23,13 +23,30 @@ enum ZipTool {
 }
 
 enum DocxWriter {
-    enum Block { case paragraph(String), image(URL), pageBreak }
+    enum Block { case paragraph(String), styled([Run]), image(URL), pageBreak }
+
+    /// A stretch of text with one look, as read from a PDF's text layer.
+    struct Run {
+        var text: String
+        var font: String?
+        var size: CGFloat?
+        var bold = false
+        var italic = false
+        var underline = false
+        var color: String?
+    }
+
+    /// US Letter with one-inch margins unless the source says otherwise. Sizes are in points.
+    struct Page {
+        var size = CGSize(width: 612, height: 792)
+        var margin: CGFloat = 72
+    }
 
     static func write(paragraphs: [String], images: [URL], to destination: URL) async throws {
         try await write(blocks: paragraphs.map { .paragraph($0) } + images.map { .image($0) }, to: destination)
     }
 
-    static func write(blocks: [Block], to destination: URL) async throws {
+    static func write(blocks: [Block], page: Page = Page(), to destination: URL) async throws {
         let images = blocks.compactMap { block -> URL? in if case .image(let url) = block { return url }; return nil }
         let fm = FileManager.default
         let staging = fm.temporaryDirectory.appendingPathComponent("opentangerine-docx-\(UUID().uuidString)")
@@ -50,6 +67,9 @@ enum DocxWriter {
             case .paragraph(let paragraph):
                 body += "<w:p><w:r><w:t xml:space=\"preserve\">\(escape(paragraph))</w:t></w:r></w:p>"
                 continue
+            case .styled(let runs):
+                body += "<w:p>" + runs.map(runXML).joined() + "</w:p>"
+                continue
             case .pageBreak:
                 body += "<w:p><w:r><w:br w:type=\"page\"/></w:r></w:p>"
                 continue
@@ -64,8 +84,8 @@ enum DocxWriter {
             let rid = "rId\(index + 10)"
             relationships += "<Relationship Id=\"\(rid)\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/image\" Target=\"media/\(name)\"/>"
             let size = ImageIOBridge.pixelSize(image)
-            let maxWidthEMU = 5_943_600.0
-            let maxHeightEMU = 8_229_600.0
+            let maxWidthEMU = Double(page.size.width - 2 * page.margin) * 12_700
+            let maxHeightEMU = Double(page.size.height - 2 * page.margin) * 12_700
             var widthEMU = max(size.width, 1) * 9525
             var heightEMU = max(size.height, 1) * 9525
             let scale = min(maxWidthEMU / widthEMU, maxHeightEMU / heightEMU, 1)
@@ -99,10 +119,11 @@ enum DocxWriter {
         <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
         <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">\(relationships)</Relationships>
         """
+        let margin = twips(page.margin)
         let document = """
         <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
         <w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture">
-        <w:body>\(body)<w:sectPr><w:pgSz w:w="12240" w:h="15840"/><w:pgMar w:top="1440" w:right="1440" w:bottom="1440" w:left="1440" w:header="720" w:footer="720" w:gutter="0"/></w:sectPr></w:body>
+        <w:body>\(body)<w:sectPr><w:pgSz w:w="\(twips(page.size.width))" w:h="\(twips(page.size.height))"/><w:pgMar w:top="\(margin)" w:right="\(margin)" w:bottom="\(margin)" w:left="\(margin)" w:header="720" w:footer="720" w:gutter="0"/></w:sectPr></w:body>
         </w:document>
         """
         let styles = """
@@ -127,6 +148,20 @@ enum DocxWriter {
         try await ZipTool.zipOrdered(directory: staging, entries: entries, to: destination)
     }
 
+    private static func twips(_ points: CGFloat) -> Int { Int((points * 20).rounded()) }
+
+    private static func runXML(_ run: Run) -> String {
+        var props = ""
+        if let font = run.font { props += "<w:rFonts w:ascii=\"\(escape(font))\" w:hAnsi=\"\(escape(font))\" w:cs=\"\(escape(font))\"/>" }
+        if run.bold { props += "<w:b/>" }
+        if run.italic { props += "<w:i/>" }
+        if run.underline { props += "<w:u w:val=\"single\"/>" }
+        if let color = run.color { props += "<w:color w:val=\"\(color)\"/>" }
+        if let size = run.size { props += "<w:sz w:val=\"\(max(2, Int((size * 2).rounded())))\"/>" }
+        let rPr = props.isEmpty ? "" : "<w:rPr>\(props)</w:rPr>"
+        return "<w:r>\(rPr)<w:t xml:space=\"preserve\">\(escape(run.text))</w:t></w:r>"
+    }
+
     private static func drawing(rid: String, id: Int, name: String, cx: Int, cy: Int) -> String {
         """
         <w:p><w:r><w:drawing><wp:inline distT="0" distB="0" distL="0" distR="0"><wp:extent cx="\(cx)" cy="\(cy)"/><wp:docPr id="\(id)" name="\(name)"/><a:graphic><a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/picture"><pic:pic><pic:nvPicPr><pic:cNvPr id="\(id)" name="\(name)"/><pic:cNvPicPr/></pic:nvPicPr><pic:blipFill><a:blip r:embed="\(rid)"/><a:stretch><a:fillRect/></a:stretch></pic:blipFill><pic:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="\(cx)" cy="\(cy)"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom></pic:spPr></pic:pic></a:graphicData></a:graphic></wp:inline></w:drawing></w:r></w:p>
@@ -134,7 +169,9 @@ enum DocxWriter {
     }
 
     static func escape(_ text: String) -> String {
-        text.replacingOccurrences(of: "&", with: "&amp;")
+        // XML 1.0 forbids most control characters; PDFs sometimes carry them in their text layer.
+        String(String.UnicodeScalarView(text.unicodeScalars.filter { $0.value >= 0x20 || $0 == "\t" || $0 == "\n" }))
+            .replacingOccurrences(of: "&", with: "&amp;")
             .replacingOccurrences(of: "<", with: "&lt;")
             .replacingOccurrences(of: ">", with: "&gt;")
             .replacingOccurrences(of: "\"", with: "&quot;")

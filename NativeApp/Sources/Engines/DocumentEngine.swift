@@ -186,24 +186,7 @@ struct DocumentEngine: ConversionEngine {
                 try FileManager.default.moveItem(at: folder, to: request.destination)
             }
         case .docx:
-            var blocks: [DocxWriter.Block] = []
-            let temp = FileManager.default.temporaryDirectory.appendingPathComponent("opentangerine-pdfdocx-\(UUID().uuidString)")
-            try FileManager.default.createDirectory(at: temp, withIntermediateDirectories: true)
-            defer { try? FileManager.default.removeItem(at: temp) }
-            for index in 0..<pageCount {
-                guard let page = document.page(at: index) else { throw OpenTangerineError.encodeFailed("PDF page \(index + 1)") }
-                if index > 0 { blocks.append(.pageBreak) }
-                let text = page.string?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-                if !text.isEmpty {
-                    blocks += text.components(separatedBy: "\n").map { .paragraph($0.trimmingCharacters(in: .whitespaces)) }
-                } else if let image = PDFRenderer.render(page: page, dpi: 150) {
-                    let pageImage = temp.appendingPathComponent("page\(index + 1).png")
-                    try ImageIOBridge.write(image, to: pageImage, format: .png)
-                    blocks.append(.image(pageImage))
-                }
-                request.progress(Double(index + 1) / Double(pageCount) * 0.8)
-            }
-            try await DocxWriter.write(blocks: blocks, to: request.destination)
+            try await PDFToDocx.convert(document, source: request.source, to: request.destination, progress: request.progress)
         default:
             throw OpenTangerineError.unsupportedConversion(.pdf, request.target)
         }

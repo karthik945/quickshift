@@ -6,7 +6,7 @@ enum OpenTangerineError: LocalizedError {
     case encodeFailed(String)
     case ffmpegMissing(String)
     case toolFailed(String, String)
-    case toolMissing(tool: String, package: String, purpose: String)
+    case toolMissing(tool: String, install: String, purpose: String)
     case cancelled
     case invalidInput(String)
 
@@ -22,8 +22,8 @@ enum OpenTangerineError: LocalizedError {
             return "\(what) needs ffmpeg. Install it (for example with `brew install ffmpeg`) or set its path in Settings."
         case let .toolFailed(tool, output):
             return "\(tool) failed: \(output.trimmingCharacters(in: .whitespacesAndNewlines))"
-        case let .toolMissing(tool, package, purpose):
-            return "\(purpose) needs \(tool). Install it with `brew install \(package)`, then try again."
+        case let .toolMissing(tool, install, purpose):
+            return "\(purpose) needs \(tool). Install it with `\(install)`, then try again."
         case .cancelled:
             return "Cancelled."
         case let .invalidInput(reason):
