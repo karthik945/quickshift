@@ -9,7 +9,15 @@ final class Job: ObservableObject, Identifiable {
     let symbol: String
     @Published var progress: Double = 0
     @Published var status: Status = .waiting
+    /// Shown instead of "Done", for example "2.4 MB → 196 KB (−92%)".
+    @Published var summary: String?
+    /// The job finished but missed its target size; the notch stays up so the result can be read.
+    @Published var missedTarget = false
     var outputs: [URL] = []
+    var sizeSource: URL?
+    /// Read after the work finishes, for jobs whose result is not a file (for example copied text).
+    var summaryProvider: (() -> String?)?
+    var targetBytes: Int64?
     var task: Task<Void, Never>?
 
     enum Status: Equatable {
@@ -107,6 +115,8 @@ final class JobRunner: ObservableObject {
                 let outputs = try await work(progress)
                 try Task.checkCancellation()
                 job.outputs = outputs
+                job.summary = job.summaryProvider?() ?? Self.sizeSummary(job, outputs: outputs)
+                if let target = job.targetBytes, outputs.count == 1 { job.missedTarget = FileSizeFormatter.size(of: outputs[0]) > target }
                 job.progress = 1
                 job.status = .done
                 DiagnosticLog.log("job done: \(job.detail) -> \(outputs.map(\.lastPathComponent))")
@@ -157,8 +167,23 @@ final class JobRunner: ObservableObject {
         dismissAll()
     }
 
-    func run(title: String, detail: String, symbol: String = "arrow.triangle.2.circlepath", work: @escaping (@escaping (Double) -> Void) async throws -> [URL]) {
-        enqueue(Job(title: title, detail: detail, symbol: symbol), work: work)
+    func run(title: String, detail: String, symbol: String = "arrow.triangle.2.circlepath", sizeSource: URL? = nil, targetBytes: Int64? = nil, summary: (() -> String?)? = nil, work: @escaping (@escaping (Double) -> Void) async throws -> [URL]) {
+        let job = Job(title: title, detail: detail, symbol: symbol)
+        job.sizeSource = sizeSource
+        job.targetBytes = targetBytes
+        job.summaryProvider = summary
+        enqueue(job, work: work)
+    }
+
+    private static func sizeSummary(_ job: Job, outputs: [URL]) -> String? {
+        guard let source = job.sizeSource, outputs.count == 1 else { return nil }
+        let before = FileSizeFormatter.size(of: source), after = FileSizeFormatter.size(of: outputs[0])
+        guard before > 0 else { return nil }
+        let saved = Int(((1 - Double(after) / Double(before)) * 100).rounded())
+        var text = "\(FileSizeFormatter.string(before)) → \(FileSizeFormatter.string(after))"
+        if saved > 0 { text += " (−\(saved)%)" }
+        if let target = job.targetBytes, after > target { text += " · couldn't reach \(FileSizeFormatter.string(target))" }
+        return text
     }
 
     func watchWheel(label: String? = nil, direction: CGFloat = 0) {
@@ -197,7 +222,7 @@ final class JobRunner: ObservableObject {
         guard !jobs.isEmpty else { return }
         guard AppSettings.shared.progressStyle == .pill || !resultsHovered else { return }
         guard jobs.allSatisfy({ $0.status.isFinished }) else { return }
-        guard !jobs.contains(where: { if case .failed = $0.status { return true }; return false }) else { return }
+        guard !jobs.contains(where: { if case .failed = $0.status { return true }; return $0.missedTarget }) else { return }
         hideWorkItem?.cancel()
         let item = DispatchWorkItem { [weak self] in
             guard let self else { return }
@@ -501,7 +526,7 @@ struct JobPillRow: View {
             .disabled(!showsCancel)
             .help(showsCancel ? "Cancel" : "")
             if showsLabel {
-                Text(job.detail)
+                Text(job.status == .done ? job.summary ?? job.detail : job.detail)
                     .font(.caption2)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
@@ -530,13 +555,14 @@ struct JobPillRow: View {
 
     private var tint: Color {
         if failed { return .red }
+        if job.missedTarget { return .orange }
         return showsCancel ? .secondary : Theme.accent
     }
 
     private var symbol: String {
         switch job.status {
         case .failed: return "exclamationmark.triangle.fill"
-        case .done: return "checkmark.circle.fill"
+        case .done: return job.missedTarget ? "exclamationmark.circle.fill" : "checkmark.circle.fill"
         case .cancelled: return "xmark.circle"
         case .waiting, .running: return job.symbol
         }
@@ -599,7 +625,7 @@ struct JobCardView: View {
         switch job.status {
         case .waiting: return "\(job.detail) · Waiting"
         case .running: return "\(job.detail) · \(Int((job.progress * 100).rounded()))%"
-        case .done: return "\(job.detail) · Done"
+        case .done: return "\(job.detail) · \(job.summary ?? "Done")"
         case .cancelled: return "\(job.detail) · Cancelled"
         case .failed(let message): return "\(job.detail) · \(message)"
         }

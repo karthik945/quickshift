@@ -31,7 +31,7 @@ final class ProcessBox: @unchecked Sendable {
 }
 
 enum Shell {
-    static func run(_ executable: String, _ arguments: [String], currentDirectory: URL? = nil) async throws -> ShellResult {
+    static func run(_ executable: String, _ arguments: [String], currentDirectory: URL? = nil, qualityOfService: QualityOfService? = nil) async throws -> ShellResult {
         let box = ProcessBox()
         return try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { continuation in
@@ -39,6 +39,7 @@ enum Shell {
                 process.executableURL = URL(fileURLWithPath: executable)
                 process.arguments = arguments
                 if let currentDirectory { process.currentDirectoryURL = currentDirectory }
+                if let qualityOfService { process.qualityOfService = qualityOfService }
                 let outPipe = Pipe()
                 let errPipe = Pipe()
                 process.standardOutput = outPipe

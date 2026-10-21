@@ -40,12 +40,32 @@ struct OpenTangerineTests {
         let runner = TestRunner()
 
         runner.test("conversion matrix excludes disabled archives") {
-            try expectEqual(ConversionMatrix.totalConversions, 176)
+            try expectEqual(ConversionMatrix.totalConversions, 194)
             try expectEqual(ConversionMatrix.targets(for: .zip).count, 0)
         }
 
-        runner.test("25 advanced tools") {
-            try expectEqual(ToolID.total, 25)
+        runner.test("design files convert to SVG and raster formats") {
+            try expectEqual(FileFormat.detect(URL(fileURLWithPath: "/tmp/Logo.AI")), .ai)
+            try expectEqual(FileFormat.detect(URL(fileURLWithPath: "/tmp/a.epsf")), .eps)
+            try expectEqual(FileFormat.detect(URL(fileURLWithPath: "/tmp/a.psd")), .psd)
+            for format in FileFormat.designs {
+                try expectEqual(format.category, .design)
+                for target: FileFormat in format == .psd ? [.png, .jpg, .pdf] : [.svg, .png, .jpg, .pdf] {
+                    try expect(ConversionMatrix.targets(for: format).contains(target), "\(format) → \(target)")
+                    try expect(Engines.engine(from: format, to: target) is DesignEngine, "\(format) → \(target) engine")
+                }
+            }
+            try expectEqual(ToolID.available(for: [.psd]), [.exportAssets], "design files only export")
+            try expect(ConversionMatrix.targets(for: .ai).contains(.eps), "ai → eps")
+            try expect(!ConversionMatrix.targets(for: .psd).contains(.svg), "psd is pixels, no svg")
+            try expect(!ConversionMatrix.targets(for: .ai).contains(.heic), "design lists stay focused")
+        }
+
+        runner.test("28 advanced tools") {
+            try expectEqual(ToolID.total, 28)
+            try expect(ToolID.copyText.applies(to: [.png, .jpg]) && ToolID.copyText.applies(to: [.pdf]), "copy text on images and PDFs")
+            try expect(ToolID.removeBackground.applies(to: [.jpg, .png, .heic]), "remove background on images")
+            try expect(!ToolID.removeBackground.applies(to: [.pdf]), "no background removal on PDFs")
         }
 
         runner.test("no format converts to itself") {
@@ -185,13 +205,14 @@ struct OpenTangerineTests {
             try expect(ToolID.compress.applies(to: [.gif]), "gif compress")
             try expect(!ToolID.mergePDF.applies(to: [.docx, .docx]), "docx merge")
             try expectEqual(ToolID.available(for: [.mp3]).count, 7)
-            try expectEqual(ToolID.available(for: [.pdf]).count, 4)
+            try expectEqual(ToolID.available(for: [.pdf]).count, 6)
         }
 
         runner.test("compression presets") {
             try expect(CompressionPreset.strong.imageQuality < CompressionPreset.balanced.imageQuality, "strong is smaller")
+            try expect(CompressionPreset.balanced.imageQuality < CompressionPreset.lossless.imageQuality, "lossless keeps quality")
             try expect(CompressionPreset.strong.videoBitrateFactor < CompressionPreset.balanced.videoBitrateFactor, "strong video")
-            try expectEqual(Compressor.outputFormat(for: URL(fileURLWithPath: "/tmp/a.svg")), .jpg)
+            try expectEqual(Compressor.outputFormat(for: URL(fileURLWithPath: "/tmp/a.svg")), .svg)
             try expectEqual(Compressor.outputFormat(for: URL(fileURLWithPath: "/tmp/a.jpg")), .jpg)
             try expectEqual(Compressor.outputFormat(for: URL(fileURLWithPath: "/tmp/a.wav")), .m4a)
         }

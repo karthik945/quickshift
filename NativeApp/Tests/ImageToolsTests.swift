@@ -106,6 +106,39 @@ import PDFKit
         try await MetadataOps.write(pdfURL,edits:await MetadataOps.read(pdfURL),removeAll:false,removeSensitive:true,to:pdfClean,progress:{_ in})
         let pdfFields=await MetadataOps.read(pdfClean)
         check(!pdfFields.contains {$0.key=="Author"} && pdfFields.contains {$0.value=="Keep title"}, "PDF sensitive stripping retains title")
+        // A dark disc on a plain background: Vision either cuts it out with transparency or reports no subject.
+        let subject = CGContext(data: nil, width: 400, height: 300, bitsPerComponent: 8, bytesPerRow: 0, space: CGColorSpace(name: CGColorSpace.sRGB)!, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
+        subject.setFillColor(CGColor(red: 0.95, green: 0.95, blue: 0.92, alpha: 1)); subject.fill(CGRect(x: 0, y: 0, width: 400, height: 300))
+        subject.setFillColor(CGColor(red: 0.8, green: 0.2, blue: 0.1, alpha: 1)); subject.fillEllipse(in: CGRect(x: 130, y: 70, width: 140, height: 160))
+        let subjectURL = dir.appendingPathComponent("subject.png"), cutoutURL = dir.appendingPathComponent("subject no background.png")
+        try ImageIOBridge.write(subject.makeImage()!, to: subjectURL, format: .png)
+        do {
+            try await BackgroundRemover.removeBackground(subjectURL, to: cutoutURL)
+            let cutout = try ImageIOBridge.load(cutoutURL), px = pixels(cutout)
+            check(cutout.width == 400 && cutout.height == 300 && px[3] < 10 && px[(150 * 400 + 200) * 4 + 3] > 245, "background removal keeps size, clears corners, keeps subject")
+        } catch OpenTangerineError.invalidInput(let message) {
+            check(message.contains("No clear subject"), "background removal reports a missing subject clearly")
+        }
+        // Copy text: OCR on a rendered screenshot, and direct reading of a PDF's own text layer.
+        let shot = NSImage(size: NSSize(width: 900, height: 200), flipped: false) { rect in
+            NSColor.white.setFill(); rect.fill()
+            NSAttributedString(string: "Quick Shift reads text offline", attributes: [.font: NSFont.systemFont(ofSize: 48), .foregroundColor: NSColor.black]).draw(at: NSPoint(x: 30, y: 70))
+            return true
+        }
+        let shotURL = dir.appendingPathComponent("screenshot.png")
+        try ImageIOBridge.write(shot.cgImage(forProposedRect: nil, context: nil, hints: nil)!, to: shotURL, format: .png)
+        let ocr = try await TextRecognizer.text(in: shotURL)
+        check(ocr.contains("Quick Shift reads text"), "OCR reads a screenshot: \(ocr)")
+        let textPDF = dir.appendingPathComponent("letter.pdf")
+        var page = CGRect(x: 0, y: 0, width: 595, height: 842)
+        let textContext = CGContext(textPDF as CFURL, mediaBox: &page, nil)!
+        textContext.beginPDFPage(nil)
+        NSGraphicsContext.current = NSGraphicsContext(cgContext: textContext, flipped: false)
+        NSAttributedString(string: "Invoice number 4821", attributes: [.font: NSFont.systemFont(ofSize: 14)]).draw(at: NSPoint(x: 60, y: 760))
+        NSGraphicsContext.current = nil
+        textContext.endPDFPage(); textContext.closePDF()
+        let pdfText = try await TextRecognizer.text(in: textPDF)
+        check(pdfText.contains("Invoice number 4821"), "PDF text layer is read directly: \(pdfText)")
         print("Image tool failures: \(failures)")
         if failures > 0 { exit(1) }
     }

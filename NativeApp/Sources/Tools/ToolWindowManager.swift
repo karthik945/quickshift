@@ -32,6 +32,15 @@ final class ToolWindowManager: NSObject, NSWindowDelegate {
 
     func open(_ tool: ToolID, files: [URL]) {
         guard !files.isEmpty else { return }
+        // One-step tools have no settings, so they run straight away instead of opening a window.
+        if tool == .removeBackground {
+            BackgroundRemover.run(files)
+            return
+        }
+        if tool == .copyText {
+            TextRecognizer.run(files)
+            return
+        }
         let session = ToolSession(tool: tool, files: files)
         let root = ToolRootView(session: session)
             .environmentObject(AppSettings.shared)
@@ -77,7 +86,7 @@ final class ToolWindowManager: NSObject, NSWindowDelegate {
 
     static func windowClass(for tool: ToolID) -> WindowClass {
         switch tool {
-        case .compress, .resizeImage, .createPDF, .mergePDF, .splitPDF, .audioChannels, .rotateImage:
+        case .compress, .exportAssets, .resizeImage, .createPDF, .mergePDF, .splitPDF, .audioChannels, .rotateImage:
             return .compact
         case .editMetadata, .normalizeAudio, .organizePDF, .createCollage, .joinVideos, .audioToVideo, .trimAudio, .redactAudio:
             return .standard
@@ -88,7 +97,7 @@ final class ToolWindowManager: NSObject, NSWindowDelegate {
 
     static func preferredSize(for tool: ToolID) -> NSSize {
         switch tool {
-        case .compress:
+        case .compress, .exportAssets:
             return NSSize(width: 640, height: 560)
         case .resizeImage:
             return NSSize(width: 620, height: 400)
@@ -125,6 +134,9 @@ struct ToolRootView: View {
             case .compress: CompressToolView(session: session)
             case .editMetadata: MetadataToolView(session: session)
             case .editImage: EditImageToolView(session: session)
+            case .removeBackground: EmptyView()
+            case .exportAssets: ExportAssetsToolView(session: session)
+            case .copyText: EmptyView()
             case .frameImage: FrameImageToolView(session: session)
             case .cropImage: CropImageToolView(session: session)
             case .redactImage: RedactImageToolView(session: session)

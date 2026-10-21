@@ -24,6 +24,10 @@ enum ConversionMatrix {
             list = [] // Archive engine is disabled; do not offer operations that always fail.
         case .docx:
             list = []
+        case .ai, .eps:
+            list = [.svg, .pdf, .eps, .png, .jpg, .webp, .tiff]
+        case .psd:
+            list = [.png, .jpg, .webp, .tiff, .pdf]
         }
         return list.filter { $0 != source }
     }
